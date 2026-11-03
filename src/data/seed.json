@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "revision": 0,
+  "settings": {
+    "theme": "system", "accent": "#f97316",
+    "generation": { "baseUrl": "https://api.openai.com/v1", "apiMode": "responses", "model": "gpt-image-2.5-sunburst", "mainModel": "gpt-5.5" },
+    "refine": { "useImageConnection": true, "baseUrl": "https://api.openai.com/v1", "model": "gpt-5.5" },
+    "library": { "mode": "local", "nasUrl": "" }
+  },
+  "workspaces": [
+    { "id": "demo-plush", "name": "毛绒材质实验", "createdAt": "2026-11-03T08:00:00+08:00" },
+    { "id": "demo-scroll", "name": "魔幻卷轴商店", "createdAt": "2026-11-02T08:00:00+08:00" },
+    { "id": "demo-studies", "name": "视觉灵感", "createdAt": "2026-11-01T08:00:00+08:00" }
+  ],
+  "sessions": [
+    { "id": "demo-material", "workspaceId": "demo-plush", "title": "材质与光照", "draft": "保留狐狸的耳朵、表情和构图，将角色转换为柔软的短绒玩具。自然光，细微缝线，暖灰背景。", "originalPrompt": "将参考图中的狐狸改成毛绒玩具质感，保留角色特征。", "referenceIds": [], "contextMode": "new", "createdAt": "2026-11-03T08:00:00+08:00" },
+    { "id": "demo-independent", "workspaceId": "demo-plush", "title": "独立对照", "draft": "把狐狸变成一个毛绒玩具。", "originalPrompt": "把狐狸变成一个毛绒玩具。", "referenceIds": [], "contextMode": "new", "createdAt": "2026-11-03T09:00:00+08:00" },
+    { "id": "demo-cinematic", "workspaceId": "demo-scroll", "title": "写实风格优化", "draft": "两个少女在魔法卷轴商店里交谈，暖色实景电影光照。", "originalPrompt": "两个少女在魔法商店里交谈。", "referenceIds": [], "contextMode": "new", "createdAt": "2026-11-02T08:00:00+08:00" },
+    { "id": "demo-color", "workspaceId": "demo-studies", "title": "色彩与构图", "draft": "", "originalPrompt": "", "referenceIds": [], "contextMode": "new", "createdAt": "2026-11-01T08:00:00+08:00" }
+  ],
+  "assets": [
+    { "id": "demo-fox-v3", "title": "毛绒狐狸", "path": "/samples/plush-fox.svg", "mime": "image/svg+xml", "width": 800, "height": 1000, "createdAt": "2026-11-03T10:42:00+08:00", "workspaceId": "demo-plush", "sessionId": "demo-material", "originalPrompt": "将参考图中的狐狸改成毛绒玩具质感，保留角色特征。", "submittedPrompt": "保留狐狸的耳朵、表情和构图，将角色转换为柔软的短绒玩具。自然光，细微缝线，暖灰背景。", "referenceIds": [], "model": "设计示例", "size": "1024x1536", "quality": "high", "groupId": "demo-fox", "parentAssetId": "demo-fox-v1", "favorite": true, "isReference": false, "demo": true },
+    { "id": "demo-shop-v2", "title": "卷轴商店", "path": "/samples/scroll-shop.svg", "mime": "image/svg+xml", "width": 1400, "height": 900, "createdAt": "2026-11-03T10:16:00+08:00", "workspaceId": "demo-scroll", "sessionId": "demo-cinematic", "originalPrompt": "两个少女在魔法商店里交谈。", "submittedPrompt": "保留两名人物与店内布局，强化木材和羊皮纸细节，用暖色电影光照表现安静的魔法商店。", "referenceIds": [], "model": "设计示例", "size": "1536x1024", "quality": "high", "groupId": "demo-shop", "favorite": false, "isReference": false, "demo": true },
+    { "id": "demo-mountain", "title": "山间暮色", "path": "/samples/mountain.svg", "mime": "image/svg+xml", "width": 1400, "height": 900, "createdAt": "2026-11-03T09:50:00+08:00", "workspaceId": "demo-studies", "sessionId": "demo-color", "originalPrompt": "雾中的远山，落日，安静的蓝绿色与暖橙色。", "submittedPrompt": "雾中的远山，落日，安静的蓝绿色与暖橙色。", "referenceIds": [], "model": "设计示例", "size": "1536x1024", "quality": "high", "groupId": "demo-mountain", "favorite": true, "isReference": false, "demo": true },
+    { "id": "demo-fox-v1", "title": "狐狸 · 初始造型", "path": "/samples/clay-fox.svg", "mime": "image/svg+xml", "width": 1000, "height": 1000, "createdAt": "2026-11-03T09:25:00+08:00", "workspaceId": "demo-plush", "sessionId": "demo-material", "originalPrompt": "一只温暖的橙色狐狸，简洁的造型，柔和的光。", "submittedPrompt": "一只温暖的橙色狐狸，简洁的造型，柔和的光。", "referenceIds": [], "model": "设计示例", "size": "1024x1024", "quality": "high", "groupId": "demo-fox", "favorite": false, "isReference": false, "demo": true },
+    { "id": "demo-botanic", "title": "植物展 · 版式探索", "path": "/samples/botanic.svg", "mime": "image/svg+xml", "width": 800, "height": 1100, "createdAt": "2026-11-03T09:04:00+08:00", "workspaceId": "demo-studies", "sessionId": "demo-color", "originalPrompt": "植物展的极简海报，柔和的苔绿色，几何造型。", "submittedPrompt": "植物展的极简海报，柔和的苔绿色，几何造型。", "referenceIds": [], "model": "设计示例", "size": "1024x1536", "quality": "high", "groupId": "demo-botanic", "favorite": false, "isReference": false, "demo": true },
+    { "id": "demo-night", "title": "蓝调山谷", "path": "/samples/night-valley.svg", "mime": "image/svg+xml", "width": 1000, "height": 1000, "createdAt": "2026-11-02T19:10:00+08:00", "workspaceId": "demo-studies", "sessionId": "demo-color", "originalPrompt": "夜幕降临的山谷，月光和远处的灯火。", "submittedPrompt": "夜幕降临的山谷，月光和远处的灯火。", "referenceIds": [], "model": "设计示例", "size": "1024x1024", "quality": "high", "groupId": "demo-night", "favorite": false, "isReference": false, "demo": true }
+  ],
+  "presets": [
+    { "id": "preset-plush", "name": "毛绒玩具质感", "description": "保留角色特征，把材质变得柔软。", "assetId": "demo-fox-v3", "prompt": "将参考图中的主体转换为柔软短绒玩具，保留角色特征、表情与原有构图。自然光，细微缝线，干净背景。", "size": "1024x1536", "quality": "high", "referenceIds": [], "createdAt": "2026-11-03T08:00:00+08:00" },
+    { "id": "preset-cinematic", "name": "电影感场景", "description": "真实材质、暖色光照与清晰的空间关系。", "assetId": "demo-shop-v2", "prompt": "保留参考图中的人物关系和构图，转换为电影场景。真实材质、自然景深、暖色实景光照。", "size": "1536x1024", "quality": "high", "referenceIds": [], "createdAt": "2026-11-03T08:00:00+08:00" }
+  ],
+  "jobs": []
+}
