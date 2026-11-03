@@ -16,3 +16,13 @@ export function roleModel(settings: Settings, role: ModelRole) {
   const provider=s.providers.find(p=>p.id===selection.providerId);
   return {provider,model:provider?.models.find(m=>m.id===selection.modelId)};
 }
+
+/** Keep the visible model/connection in sync before the native save completes. */
+export function resolvedSettings(settings: Settings): Settings {
+  const next = providerSettings(settings);
+  const image = roleModel(next, 'image'), main = roleModel(next, 'imageMain'), refine = roleModel(next, 'refine');
+  return { ...next,
+    generation: { ...next.generation, model: next.modelAssignments.image.modelId, mainModel: main.model?.id ?? next.generation.mainModel, baseUrl: image.provider?.baseUrl ?? next.generation.baseUrl, providerId: image.provider?.id },
+    refine: { ...next.refine, model: refine.model?.id ?? next.refine.model, baseUrl: refine.provider?.baseUrl ?? next.refine.baseUrl, useImageConnection: image.provider?.id === refine.provider?.id },
+  };
+}

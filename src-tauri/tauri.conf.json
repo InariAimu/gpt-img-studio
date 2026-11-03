@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Image Studio",
+  "productName": "GPT Image Studio",
   "version": "0.1.0",
   "identifier": "dev.inariaimu.gpt-img-studio",
   "build": {
@@ -13,7 +13,7 @@
     "windows": [{
       "label": "main",
       "create": false,
-      "title": "Image Studio",
+      "title": "GPT Image Studio",
       "width": 1280,
       "height": 800,
       "minWidth": 1000,

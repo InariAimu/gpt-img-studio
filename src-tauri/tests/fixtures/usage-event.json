@@ -1,0 +1,91 @@
+{
+  "schema": "gpt-img-studio.usage",
+  "schemaVersion": 1,
+  "id": "synthetic-request",
+  "deviceId": "synthetic-studio",
+  "sessionId": "synthetic-session",
+  "operation": "image",
+  "provider": {
+    "id": "synthetic-provider",
+    "name": "Synthetic Provider",
+    "kind": "openai"
+  },
+  "protocol": "responses",
+  "occurredAt": 1793718000,
+  "statusCode": 200,
+  "durationMs": 1000,
+  "requestCount": 1,
+  "components": [
+    {
+      "kind": "language",
+      "model": "synthetic-language",
+      "usageAvailable": true,
+      "tokens": {
+        "input": 200,
+        "output": 100,
+        "cacheRead": 800,
+        "cacheWrite": 0,
+        "reasoning": 70,
+        "totalInput": 1000,
+        "total": 1100
+      },
+      "imageInputTokens": null,
+      "textInputTokens": null,
+      "cacheBreakdownKnown": true,
+      "cacheWriteApplicable": true,
+      "rawUsage": {
+        "privateSyntheticPayload": "must-not-export"
+      },
+      "pricingSnapshot": {
+        "source": "provider_config",
+        "currency": "USD",
+        "unit": "per_million_tokens",
+        "asOf": "2026-11-03",
+        "rates": {
+          "input": "2",
+          "cachedInput": "0.1",
+          "cacheWrite": "2",
+          "output": "10"
+        }
+      },
+      "estimatedCostUsd": "0.00148",
+      "estimateStatus": "estimated"
+    },
+    {
+      "kind": "image",
+      "model": "synthetic-image",
+      "usageAvailable": true,
+      "tokens": {
+        "input": null,
+        "output": 100,
+        "cacheRead": null,
+        "cacheWrite": 0,
+        "reasoning": null,
+        "totalInput": 1000,
+        "total": 1100
+      },
+      "imageInputTokens": 800,
+      "textInputTokens": 200,
+      "cacheBreakdownKnown": false,
+      "cacheWriteApplicable": false,
+      "rawUsage": {
+        "privateSyntheticPayload": "must-not-export"
+      },
+      "pricingSnapshot": {
+        "source": "provider_config",
+        "currency": "USD",
+        "unit": "per_million_tokens",
+        "asOf": "2026-11-03",
+        "rates": {
+          "input": "5",
+          "imageInput": "8",
+          "cachedInput": "0.5",
+          "cachedImageInput": "2",
+          "output": "30"
+        }
+      },
+      "estimatedCostUsd": "0.0104",
+      "estimateStatus": "upper_bound"
+    }
+  ]
+}

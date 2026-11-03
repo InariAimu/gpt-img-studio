@@ -64,6 +64,7 @@ impl Store {
             Connection::open(root.join("studio.sqlite3")).map_err(|e| e.to_string())?;
         connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS studio_state (id INTEGER PRIMARY KEY CHECK(id=1), document TEXT NOT NULL);").map_err(|e| e.to_string())?;
         connection.execute_batch("CREATE TABLE IF NOT EXISTS usage_events (id TEXT PRIMARY KEY, occurred_at INTEGER NOT NULL, event TEXT NOT NULL);").map_err(|e|e.to_string())?;
+        connection.execute_batch("CREATE TABLE IF NOT EXISTS model_usage (id TEXT PRIMARY KEY, occurred_at INTEGER NOT NULL, measurement TEXT NOT NULL);").map_err(|e|e.to_string())?;
         connection
             .execute(
                 "INSERT OR IGNORE INTO studio_state(id, document) VALUES(1, ?1)",
@@ -187,7 +188,10 @@ impl Store {
     pub fn record_usage(&self, event: &Value) -> Result<()> {
         let connection = self.connection.lock().map_err(|_| "无法写入用量记录")?;
         let serialized = serde_json::to_string(event).map_err(|e| e.to_string())?;
-        let inserted = connection
+        let transaction = connection
+            .unchecked_transaction()
+            .map_err(|e| e.to_string())?;
+        let inserted = transaction
             .execute(
                 "INSERT OR IGNORE INTO usage_events(id,occurred_at,event) VALUES(?1,?2,?3)",
                 params![
@@ -197,6 +201,14 @@ impl Store {
                 ],
             )
             .map_err(|e| e.to_string())?;
+        let measurements = crate::usage::model_records(event);
+        if inserted > 0 {
+            for record in &measurements {
+                transaction.execute("INSERT OR IGNORE INTO model_usage(id,occurred_at,measurement) VALUES(?1,?2,?3)",
+                    params![text(record,"id"), record["occurredAt"].as_i64().unwrap_or(0), record.to_string()]).map_err(|e| e.to_string())?;
+            }
+        }
+        transaction.commit().map_err(|e| e.to_string())?;
         if inserted > 0 {
             // SQLite is authoritative. A failed/interrupted mirror is rebuilt at startup/export.
             let _ = (|| -> std::io::Result<()> {
@@ -206,7 +218,15 @@ impl Store {
                     .append(true)
                     .open(self.root.join("usage/usage.jsonl"))?;
                 writeln!(file, "{serialized}")?;
-                file.sync_data()
+                file.sync_data()?;
+                let mut models = fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(self.root.join("usage/models.jsonl"))?;
+                for record in &measurements {
+                    writeln!(models, "{record}")?;
+                }
+                models.sync_data()
             })();
         }
         Ok(())
@@ -227,21 +247,50 @@ impl Store {
     pub fn sync_usage_journal(&self) -> Result<()> {
         // Keep the lock through replacement so a concurrent request cannot append to an old file.
         let connection = self.connection.lock().map_err(|_| "无法同步用量日志")?;
+        let events = {
+            let mut statement = connection
+                .prepare("SELECT event FROM usage_events ORDER BY occurred_at,id")
+                .map_err(|e| e.to_string())?;
+            let rows = statement
+                .query_map([], |r| r.get::<_, String>(0))
+                .map_err(|e| e.to_string())?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?
+        };
+        let transaction = connection
+            .unchecked_transaction()
+            .map_err(|e| e.to_string())?;
+        for serialized in &events {
+            let event: Value = serde_json::from_str(serialized).map_err(|e| e.to_string())?;
+            for record in crate::usage::model_records(&event) {
+                transaction.execute("INSERT OR IGNORE INTO model_usage(id,occurred_at,measurement) VALUES(?1,?2,?3)",
+                    params![text(&record,"id"),record["occurredAt"].as_i64().unwrap_or(0),record.to_string()]).map_err(|e|e.to_string())?;
+            }
+        }
+        transaction.commit().map_err(|e| e.to_string())?;
+        fs::create_dir_all(self.root.join("usage")).map_err(|e| e.to_string())?;
+        let temp = self.root.join("usage/usage.jsonl.tmp");
+        let mut file = fs::File::create(&temp).map_err(|e| e.to_string())?;
+        for event in events {
+            writeln!(file, "{event}").map_err(|e| e.to_string())?;
+        }
+        file.sync_all().map_err(|e| e.to_string())?;
+        drop(file);
+        fs::rename(temp, self.root.join("usage/usage.jsonl")).map_err(|e| e.to_string())?;
         let mut statement = connection
-            .prepare("SELECT event FROM usage_events ORDER BY occurred_at,id")
+            .prepare("SELECT measurement FROM model_usage ORDER BY occurred_at,id")
             .map_err(|e| e.to_string())?;
         let rows = statement
             .query_map([], |r| r.get::<_, String>(0))
             .map_err(|e| e.to_string())?;
-        fs::create_dir_all(self.root.join("usage")).map_err(|e| e.to_string())?;
-        let temp = self.root.join("usage/usage.jsonl.tmp");
+        let temp = self.root.join("usage/models.jsonl.tmp");
         let mut file = fs::File::create(&temp).map_err(|e| e.to_string())?;
         for row in rows {
             writeln!(file, "{}", row.map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
         }
         file.sync_all().map_err(|e| e.to_string())?;
         drop(file);
-        fs::rename(temp, self.root.join("usage/usage.jsonl")).map_err(|e| e.to_string())?;
+        fs::rename(temp, self.root.join("usage/models.jsonl")).map_err(|e| e.to_string())?;
         Ok(())
     }
     pub fn asset_path(&self, asset: &Value) -> Result<PathBuf> {
@@ -490,6 +539,45 @@ pub fn apply_action(doc: &mut Value, action: &Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn model_measurements_backfill_frozen_quotes_and_repair_journal_without_duplicates() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let event: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/usage-event.json")).unwrap();
+        // Upgrade from a database containing only original events.
+        store
+            .connection
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO usage_events VALUES(?1,?2,?3)",
+                rusqlite::params![
+                    text(&event, "id"),
+                    event["occurredAt"].as_i64(),
+                    event.to_string()
+                ],
+            )
+            .unwrap();
+        store.sync_usage_journal().unwrap();
+        let expected = fs::read_to_string(dir.path().join("usage/models.jsonl")).unwrap();
+        assert_eq!(expected.lines().count(), 2);
+        store.record_usage(&event).unwrap();
+        fs::write(dir.path().join("usage/models.jsonl"), "interrupted line").unwrap();
+        store.sync_usage_journal().unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join("usage/models.jsonl")).unwrap(),
+            expected
+        );
+        assert_eq!(store.usage_events().unwrap(), vec![event]);
+        let count: i64 = store
+            .connection
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM model_usage", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
+    }
     #[test]
     fn relocation_waits_for_active_operations_and_blocks_new_writes() {
         let dir = tempfile::tempdir().unwrap();

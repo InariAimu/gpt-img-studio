@@ -542,7 +542,7 @@ fn usage_records(store: State<'_, Store>) -> Result<Value> {
         })
         .sum::<rust_decimal::Decimal>();
     Ok(
-        json!({"totalRequests":events.len(),"unpricedRequests":events.iter().filter(|e|e["estimatedCostUsd"].is_null()).count(),"knownEstimatedCostUsd":known.normalize().to_string(),"journalPath":store.root.join("usage/usage.jsonl").to_string_lossy(),"records":events.into_iter().rev().take(200).collect::<Vec<_>>()}),
+        json!({"totalRequests":events.len(),"unpricedRequests":events.iter().filter(|e|e["estimatedCostUsd"].is_null()).count(),"knownEstimatedCostUsd":known.normalize().to_string(),"journalPath":store.root.join("usage/usage.jsonl").to_string_lossy(),"modelJournalPath":store.root.join("usage/models.jsonl").to_string_lossy(),"totalModelUsages":events.iter().map(|e| e["components"].as_array().map_or(0,Vec::len)).sum::<usize>(),"records":events.into_iter().rev().take(200).collect::<Vec<_>>()}),
     )
 }
 #[tauri::command]
@@ -623,5 +623,5 @@ pub fn run() {
             export_usage
         ])
         .run(tauri::generate_context!())
-        .expect("Image Studio 无法启动");
+        .expect("GPT Image Studio 无法启动");
 }

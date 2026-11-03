@@ -153,10 +153,19 @@ async fn response_json(
         .get("x-request-id")
         .and_then(|h| h.to_str().ok())
         .map(str::to_owned);
-    let body = response
-        .text()
-        .await
-        .map_err(|e| e.without_url().to_string())?;
+    let body = match response.text().await {
+        Ok(body) => body,
+        Err(error) => {
+            if let Some((store, call)) = tracking {
+                store.record_usage(&call.event(
+                    &Value::Null,
+                    Some(status.as_u16()),
+                    server_request_id.as_deref(),
+                ))?;
+            }
+            return Err(error.without_url().to_string());
+        }
+    };
     let value: Value = serde_json::from_str(&body).unwrap_or_else(|_| json!({}));
     if let Some((store, call)) = tracking {
         store.record_usage(&call.event(

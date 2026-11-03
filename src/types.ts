@@ -39,7 +39,7 @@ export interface StudioDocument { schemaVersion: number; revision: number; setti
 export interface Bootstrap { document: StudioDocument; dataDir: string; hasImageKey: boolean; hasRefineKey: boolean; providerKeys?: Record<string, boolean>; storageNotice?: string | null }
 export interface UsageComponent { kind: string; model: string; usageAvailable: boolean; tokens: { totalInput: number | null; output: number | null; cacheRead: number | null; cacheWrite: number | null; reasoning: number | null }; estimatedCostUsd: string | null; estimateStatus: string; cacheBreakdownKnown: boolean; rawUsage: unknown }
 export interface UsageEvent { id: string; sessionId: string; operation: string; provider: { id: string; name: string; kind: string }; model: string; occurredAt: number; requestCount: number; statusCode: number | null; durationMs: number; estimatedCostUsd: string | null; estimateStatus: string; components: UsageComponent[] }
-export interface UsageSummary { totalRequests: number; unpricedRequests: number; knownEstimatedCostUsd: string; journalPath: string; records: UsageEvent[] }
+export interface UsageSummary { totalModelUsages: number; modelJournalPath: string; totalRequests: number; unpricedRequests: number; knownEstimatedCostUsd: string; journalPath: string; records: UsageEvent[] }
 export interface GenerationRequest { sessionId: string; prompt: string; originalPrompt: string; referenceIds: string[]; size: string; quality: string; contextMode: ContextMode }
 export interface RefineResult { prompt: string; model: string }
 export interface StudioAction { type: string; [key: string]: unknown }

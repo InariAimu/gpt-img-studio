@@ -3,6 +3,7 @@ import { convertFileSrc, invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import seed from './data/seed.json';
+import { SettingsWrites } from './settingsWrites';
 import type { Asset, Bootstrap, GenerationRequest, RefineResult, Settings, StudioAction, StudioDocument, UsageSummary } from './types';
 
 export const desktop = isTauri();
@@ -12,6 +13,11 @@ export function useStudio() {
   const [ready, setReady] = useState(!desktop);
   const [loadError, setLoadError] = useState('');
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsError, setSettingsError] = useState('');
+  const bootRef = useRef(boot); bootRef.current = boot;
+  const committedSettings = useRef(boot.document.settings);
+  const settingsWrites = useRef<SettingsWrites<Settings, Bootstrap> | null>(null);
   const serial = useRef(0);
   const sessionEditors = useRef(new Map<string,(action:StudioAction)=>Promise<StudioDocument>>());
   const notify = useCallback((message: string, error = false) => {
@@ -19,13 +25,39 @@ export function useStudio() {
     setToasts(items => [...items.slice(-2), { id, message, error }]);
     window.setTimeout(() => setToasts(items => items.filter(item => item.id !== id)), error ? 8000 : 4500);
   }, []);
+  if (!settingsWrites.current) settingsWrites.current = new SettingsWrites({
+    save: async (settings, providerKeys) => desktop
+      ? invoke<Bootstrap>('save_settings', { settings, imageKey: null, refineKey: null, providerKeys })
+      : { ...bootRef.current, document: { ...bootRef.current.document, settings } },
+    changed: settings => {
+      setSettingsError('');
+      setBoot(previous => ({ ...previous, document: { ...previous.document, settings } }));
+    },
+    saved: (value, optimistic) => {
+      committedSettings.current = value.document.settings;
+      setBoot(previous => ({ ...value, document: {
+        ...(value.document.revision >= previous.document.revision ? value.document : previous.document),
+        settings: optimistic ?? value.document.settings,
+      } }));
+    },
+    failed: (error, optimistic) => {
+      if (optimistic) return;
+      setBoot(previous => ({ ...previous, document: { ...previous.document, settings: committedSettings.current } }));
+      const message = String(error);
+      setSettingsError(message);
+      notify(`设置保存失败，已恢复上次有效设置：${message}`, true);
+    },
+    busy: setSettingsSaving,
+  });
   const accept = useCallback((document: StudioDocument) => {
-    setBoot(previous => document.revision >= previous.document.revision ? { ...previous, document } : previous);
+    if (document.revision >= bootRef.current.document.revision) committedSettings.current = document.settings;
+    setBoot(previous => document.revision >= previous.document.revision ? { ...previous, document: { ...document, settings: settingsWrites.current!.optimistic ?? document.settings } } : previous);
   }, []);
   const refresh = useCallback(async () => {
     if (!desktop) return;
     const value = await invoke<Bootstrap>('bootstrap');
-    setBoot(previous => ({ ...value, document: value.document.revision >= previous.document.revision ? value.document : previous.document }));
+    committedSettings.current = value.document.settings;
+    setBoot(previous => ({ ...value, document: { ...(value.document.revision >= previous.document.revision ? value.document : previous.document), settings: settingsWrites.current!.optimistic ?? value.document.settings } }));
     setReady(true); setLoadError('');
   }, []);
   useEffect(() => {
@@ -52,12 +84,7 @@ export function useStudio() {
     notify(`会话已移至「${document.workspaces.find(w=>w.id===workspaceId)?.name||'目标工作区'}」`);
     return document;
   },[mutate,notify]);
-  const saveSettings = useCallback(async (settings: Settings, providerKeys: Record<string,string> = {}) => {
-    requireDesktop();
-    const value = await invoke<Bootstrap>('save_settings', { settings, imageKey: null, refineKey: null, providerKeys });
-    setBoot(previous => ({ ...value, document: value.document.revision >= previous.document.revision ? value.document : previous.document }));
-    return value;
-  }, [requireDesktop]);
+  const saveSettings = useCallback((settings: Settings, providerKeys: Record<string,string> = {}) => settingsWrites.current!.enqueue(settings, providerKeys), []);
   const importImages = useCallback(async (asReference: boolean, workspaceId?: string, sessionId?: string) => {
     requireDesktop();
     const selection = await open({ multiple: true, directory: false, title: asReference ? '导入参考图' : '导入图片', filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif'] }] });
@@ -78,10 +105,10 @@ export function useStudio() {
     await invoke('export_asset', { assetId: asset.id, destination }); notify('原图已导出');
   }, [notify, requireDesktop]);
   const generate = useCallback(async (request: GenerationRequest) => {
-    requireDesktop(); const document = await invoke<StudioDocument>('generate', { request }); accept(document); notify('生成完成，原图已保存到本地图库'); return document;
+    requireDesktop(); await settingsWrites.current!.idle(); const document = await invoke<StudioDocument>('generate', { request }); accept(document); notify('生成完成，原图已保存到本地图库'); return document;
   }, [accept, notify, requireDesktop]);
   const refine = useCallback(async (prompt: string, referenceIds: string[], mode: string, sessionId: string) => {
-    requireDesktop(); return invoke<RefineResult>('refine_prompt', { prompt, referenceIds, mode, sessionId });
+    requireDesktop(); await settingsWrites.current!.idle(); return invoke<RefineResult>('refine_prompt', { prompt, referenceIds, mode, sessionId });
   }, [requireDesktop]);
   const importClipboardImages = useCallback(async (files: File[], workspaceId: string, sessionId: string) => {
     requireDesktop();
@@ -100,7 +127,7 @@ export function useStudio() {
     return result.assetIds;
   }, [requireDesktop, accept, notify]);
   const nameSession = useCallback(async (sessionId: string) => {
-    requireDesktop(); const document = await invoke<StudioDocument>('name_session', { sessionId }); accept(document); return document;
+    requireDesktop(); await settingsWrites.current!.idle(); const document = await invoke<StudioDocument>('name_session', { sessionId }); accept(document); return document;
   }, [requireDesktop, accept]);
   const imageUrl = useCallback((asset: Asset, thumbnail = false) => {
     if (asset.demo) return asset.path;
@@ -108,11 +135,11 @@ export function useStudio() {
     return convertFileSrc(`${boot.dataDir.replace(/[\\/]$/, '')}/${thumbnail && asset.thumbnailPath ? asset.thumbnailPath : asset.path}`);
   }, [boot.dataDir]);
   const report = useCallback((error: unknown) => notify(error instanceof Error ? error.message : String(error), true), [notify]);
-  const listModels = useCallback(async (providerId: string) => { requireDesktop(); return invoke<string[]>('list_provider_models',{providerId}); },[requireDesktop]);
+  const listModels = useCallback(async (providerId: string) => { requireDesktop(); await settingsWrites.current!.idle(); return invoke<string[]>('list_provider_models',{providerId}); },[requireDesktop]);
   const usageRecords = useCallback(async () => { requireDesktop(); return invoke<UsageSummary>('usage_records'); },[requireDesktop]);
   const exportUsage = useCallback(async () => { requireDesktop(); const destination=await save({title:'导出用量记录',defaultPath:'image-studio-usage.jsonl',filters:[{name:'JSON Lines',extensions:['jsonl']}]});if(destination){await invoke('export_usage',{destination});notify('用量日志已导出');} },[requireDesktop,notify]);
   const chooseDataDirectory = useCallback(async () => { requireDesktop(); return open({directory:true,multiple:false,title:'选择空的数据目录'}); },[requireDesktop]);
-  const relocateData = useCallback(async (destination:string) => { requireDesktop(); await invoke('relocate_data',{destination});notify('正在迁移数据并重启应用…'); },[requireDesktop,notify]);
-  return { ...boot, ready, loadError, toasts, notify, report, refresh, mutate, saveSettings, importImages, importClipboardImages, nameSession, exportImage, generate, refine, imageUrl, listModels, usageRecords, exportUsage, chooseDataDirectory, relocateData, moveSession, registerSessionEditor };
+  const relocateData = useCallback(async (destination:string) => { requireDesktop(); await settingsWrites.current!.idle(); await invoke('relocate_data',{destination});notify('正在迁移数据并重启应用…'); },[requireDesktop,notify]);
+  return { ...boot, ready, loadError, toasts, settingsSaving, settingsError, notify, report, refresh, mutate, saveSettings, importImages, importClipboardImages, nameSession, exportImage, generate, refine, imageUrl, listModels, usageRecords, exportUsage, chooseDataDirectory, relocateData, moveSession, registerSessionEditor };
 }
 export type Studio = ReturnType<typeof useStudio>;

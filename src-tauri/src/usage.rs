@@ -8,6 +8,24 @@ use serde_json::{json, Value};
 use std::str::FromStr;
 
 pub const PRICING_DATE: &str = "2026-11-03";
+fn provider_snapshot(provider: &Value) -> Value {
+    let endpoint = reqwest::Url::parse(text(provider, "baseUrl")).ok();
+    // Classify the configured destination; names and OpenAI-compatible protocol
+    // alone are not evidence of an official endpoint. Never journal the URL/key.
+    let service = match endpoint.as_ref() {
+        Some(url)
+            if url.scheme() == "https"
+                && url.host_str() == Some("api.openai.com")
+                && url.port_or_known_default() == Some(443) =>
+        {
+            "openai-platform"
+        }
+        Some(_) => "other",
+        None => "unknown",
+    };
+    json!({"id":provider["id"],"name":provider["name"],"kind":provider["kind"],
+        "billingChannel":"api","apiService":service})
+}
 pub struct Invocation {
     pub id: String,
     pub session_id: String,
@@ -112,7 +130,7 @@ impl Invocation {
         let upper = components
             .iter()
             .any(|c| c["estimateStatus"] == "upper_bound");
-        json!({"schema":"gpt-img-studio.usage","schemaVersion":1,"id":self.id,"harness":"gpt-img-studio","deviceId":self.device_id,"sessionId":self.session_id,"operation":self.operation,"provider":{"id":self.provider["id"],"name":self.provider["name"],"kind":self.provider["kind"]},"model":self.model["id"],"protocol":self.protocol,"responseModel":response["model"],"serviceTier":response["service_tier"],"billingBasis":"reference_api","occurredAt":self.started_at.timestamp(),"startedAt":self.started_at.to_rfc3339(),"finishedAt":chrono::Utc::now().to_rfc3339(),"durationMs":(chrono::Utc::now()-self.started_at).num_milliseconds(),"requestCount":1,"statusCode":status,"responseId":response["id"].as_str(),"serverRequestId":request_id,"components":components,"rawUsage":response["usage"],"rawToolUsage":response["tool_usage"],"estimatedCostUsd":if all_priced {json!(known)}else{Value::Null},"knownComponentCostUsd":known,"estimateStatus":if !all_priced {"incomplete"}else if upper {"upper_bound"}else{"estimated"},"currency":"USD"})
+        json!({"schema":"gpt-img-studio.usage","schemaVersion":1,"id":self.id,"harness":"gpt-img-studio","deviceId":self.device_id,"sessionId":self.session_id,"operation":self.operation,"provider":provider_snapshot(&self.provider),"model":self.model["id"],"protocol":self.protocol,"responseModel":response["model"],"serviceTier":response["service_tier"],"billingBasis":"reference_api","occurredAt":self.started_at.timestamp(),"startedAt":self.started_at.to_rfc3339(),"finishedAt":chrono::Utc::now().to_rfc3339(),"durationMs":(chrono::Utc::now()-self.started_at).num_milliseconds(),"requestCount":1,"statusCode":status,"responseId":response["id"].as_str(),"serverRequestId":request_id,"components":components,"rawUsage":response["usage"],"rawToolUsage":response["tool_usage"],"estimatedCostUsd":if all_priced {json!(known)}else{Value::Null},"knownComponentCostUsd":known,"estimateStatus":if !all_priced {"incomplete"}else if upper {"upper_bound"}else{"estimated"},"currency":"USD"})
     }
 }
 fn number(value: &Value) -> Option<u64> {
@@ -120,6 +138,34 @@ fn number(value: &Value) -> Option<u64> {
 }
 fn first(a: &Value, b: &Value) -> Option<u64> {
     number(a).or_else(|| number(b))
+}
+
+/// Stable, flat model measurements. Original request events remain authoritative;
+/// rebuilding this projection never re-estimates historical prices or reads prompts.
+pub fn model_records(event: &Value) -> Vec<Value> {
+    event["components"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .map(|(index, c)| {
+            json!({
+                "schema": "gpt-img-studio.model-usage", "schemaVersion": 1,
+                "id": format!("{}:component:{index}", text(event, "id")),
+                "requestId": event["id"], "deviceId": event["deviceId"],
+                "sessionId": event["sessionId"], "operation": event["operation"],
+                "provider": event["provider"], "model": c["model"], "kind": c["kind"],
+                "occurredAt": event["occurredAt"], "statusCode": event["statusCode"],
+                "requestDurationMs": event["durationMs"], "protocol": event["protocol"],
+                "usageAvailable": c["usageAvailable"], "tokens": c["tokens"],
+                "cacheBreakdownKnown": c["cacheBreakdownKnown"],
+                "cacheWriteApplicable": c["cacheWriteApplicable"],
+                "textInputTokens": c["textInputTokens"], "imageInputTokens": c["imageInputTokens"],
+                "estimatedCostUsd": c["estimatedCostUsd"], "estimateStatus": c["estimateStatus"],
+                "pricingSnapshot": c["pricingSnapshot"], "currency": "USD"
+            })
+        })
+        .collect()
 }
 fn pricing(model: &Value, image: bool, service_tier: &Value, input_tokens: Option<u64>) -> Value {
     if model["pricing"].as_object().is_some_and(|p| {
@@ -287,6 +333,19 @@ pub fn component(
 mod tests {
     use super::*;
     #[test]
+    fn model_export_matches_shared_contract_without_request_payloads() {
+        let event: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/usage-event.json")).unwrap();
+        let expected: Vec<Value> = include_str!("../tests/fixtures/model-usage.jsonl")
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(model_records(&event), expected);
+        assert!(!serde_json::to_string(&model_records(&event))
+            .unwrap()
+            .contains("privateSyntheticPayload"));
+    }
+    #[test]
     fn chat_cache_writes_are_charged_and_missing_billable_counts_stay_unknown() {
         let model = json!({"id":"gpt-6.1-sol"});
         let mut value = json!({"prompt_tokens":1000,"completion_tokens":100,"prompt_tokens_details":{"cached_tokens":800,"cache_write_tokens":100}});
@@ -359,5 +418,31 @@ mod tests {
         assert_eq!(e["components"].as_array().unwrap().len(), 2);
         assert_eq!(e["requestCount"], 1);
         assert_eq!(e["components"][1]["tokens"]["output"], 100);
+    }
+
+    #[test]
+    fn provider_snapshot_classifies_endpoint_without_leaking_connection_secrets() {
+        let mut p = json!({"id":"legacy-image","name":"OpenAI","kind":"openai",
+            "baseUrl":"https://user:secret@api.openai.com/v1?key=secret","apiKey":"secret"});
+        let snapshot = provider_snapshot(&p);
+        assert_eq!(snapshot["apiService"], "openai-platform");
+        assert_eq!(snapshot["billingChannel"], "api");
+        assert_eq!(snapshot["id"], "legacy-image");
+        assert!(!snapshot.to_string().contains("secret"));
+        for url in [
+            "https://api.openai.com.proxy.example/v1",
+            "https://proxy.example/v1",
+            "http://api.openai.com/v1",
+            "https://api.openai.com:8443/v1",
+        ] {
+            p["baseUrl"] = json!(url);
+            assert_eq!(provider_snapshot(&p)["apiService"], "other");
+        }
+        p["baseUrl"] = Value::Null;
+        assert_eq!(provider_snapshot(&p)["apiService"], "unknown");
+        // Re-exporting an old event must never infer its endpoint from today's settings.
+        let event: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/usage-event.json")).unwrap();
+        assert!(model_records(&event)[0]["provider"]["apiService"].is_null());
     }
 }
