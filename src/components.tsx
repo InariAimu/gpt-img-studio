@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { Check, ChevronDown, Copy, Download, GitBranch, Heart, Image as ImageIcon, Layers, Maximize2, WandSparkles, X } from 'lucide-react';
+import { Check, ChevronDown, Copy, Download, GitBranch, Heart, Image as ImageIcon, Layers, Maximize2, Pencil, WandSparkles, X } from 'lucide-react';
+import { AutoSaveInput } from './AutoSaveInput';
 import type { Asset, PromptLayer } from './types';
 import type { Studio } from './useStudio';
 
@@ -43,7 +44,7 @@ export function AssetInspector({ asset, studio, onClose, onOpen, onBranch, onPre
   const session = studio.document.sessions.find(s => s.id === asset.sessionId);
   return <aside className="inspector" aria-label="图片详情"><div className="inspector-heading"><span>作品详情</span><button className="icon-button" aria-label="关闭详情" onClick={onClose}><X /></button></div>
     <button className="inspector-preview" onClick={onOpen} aria-label="放大查看原图"><img src={studio.imageUrl(asset)} alt={asset.title} /><span className="preview-expand"><Maximize2 size={14} /></span></button>
-    <div className="inspector-name">{asset.title}{asset.demo && <span className="subtle-badge">示例</span>}</div>
+    {asset.demo?<div className="inspector-name">{asset.title}<span className="subtle-badge">示例</span></div>:<label className="inspector-name editable-asset-name" title="修改显示名称，按 Enter 或移开焦点保存"><AutoSaveInput key={asset.id} aria-label="图片名称" className="asset-name-input" value={asset.title} maxLength={200} onCommit={async title=>{try{await studio.mutate({type:'rename_asset',id:asset.id,title});}catch(error){studio.report(error);throw error;}}}/><Pencil aria-hidden="true"/></label>}
     <button className="breadcrumb-link" disabled={!session} onClick={onSession}>{workspace?.name || '本地图库'}{session && <> / {session.title}</>}</button>
     <dl className="properties"><dt>模型</dt><dd>{asset.model}</dd><dt>原图尺寸</dt><dd>{asset.width} × {asset.height}</dd><dt>质量</dt><dd>{qualityLabel(asset.quality)}</dd><dt>保存状态</dt><dd><span className="status-dot" />{asset.demo ? '内置示例插画' : '原图已保存到本地'}</dd></dl>
     <PromptDetails key={asset.id} asset={asset} studio={studio} />

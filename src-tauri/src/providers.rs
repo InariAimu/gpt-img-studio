@@ -148,6 +148,26 @@ pub fn model<'a>(settings: &'a Value, role: &str) -> Result<&'a Value> {
         .and_then(|models| models.iter().find(|m| text(m, "id") == id))
         .ok_or_else(|| format!("请为 {role} 选择有效模型"))
 }
+pub fn generation_settings(settings:&Value, selection:Option<&Value>)->Result<Value>{
+    let mut resolved=settings.clone();
+    if let Some(selection)=selection {
+        if !selection.is_object() || text(selection,"providerId").is_empty() || text(selection,"modelId").is_empty(){return Err("绘图模型选择无效".into());}
+        resolved["modelAssignments"]["image"]=selection.clone();
+        let image_provider=provider_for(&resolved,"image")?;
+        if model(&resolved,"image")?["kind"]!="image"{return Err("请选择绘图类型的模型".into());}
+        if resolved["generation"]["apiMode"]=="responses" {
+            let models=image_provider["models"].as_array().ok_or("模型列表无效")?;
+            let configured=text(&settings["modelAssignments"]["imageMain"],"modelId");
+            let eligible=|m:&&Value|m["kind"]=="text"&&m["protocol"]=="responses";
+            let main=models.iter().filter(eligible).find(|m|text(m,"id")==configured).or_else(||models.iter().find(eligible)).ok_or("此提供商还需配置支持 Responses 的语言主模型，或在设置中改用 Images API")?;
+            let assignment=json!({"providerId":image_provider["id"],"modelId":main["id"]});
+            resolved["modelAssignments"]["imageMain"]=assignment;
+        }
+    }
+    normalize(&mut resolved)?;
+    Ok(resolved)
+}
+
 pub fn credential_kind(provider: &Value) -> String {
     format!("provider:{}", text(provider, "id"))
 }

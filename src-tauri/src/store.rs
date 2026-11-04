@@ -431,6 +431,18 @@ pub fn insert_imports(
 
 pub fn apply_action(doc: &mut Value, action: &Value) -> Result<()> {
     match text(action, "type") {
+        "rename_workspace" => {
+            let name=text(action,"name").trim();
+            if name.is_empty()||name.chars().count()>80||name.chars().any(char::is_control){return Err("工作区名称需为 1–80 个字符，不能包含控制字符".into());}
+            let workspace=list_mut(doc,"workspaces")?.iter_mut().find(|w|text(w,"id")==text(action,"id")).ok_or("工作区不存在")?;
+            workspace["name"]=json!(name);
+        }
+        "rename_asset" => {
+            let title=text(action,"title").trim();
+            if title.is_empty()||title.chars().count()>200||title.chars().any(char::is_control){return Err("图片名称需为 1–200 个字符，不能包含控制字符".into());}
+            let asset=list_mut(doc,"assets")?.iter_mut().find(|a|text(a,"id")==text(action,"id")).ok_or("图片不存在")?;
+            asset["title"]=json!(title);
+        }
         "move_session" => {
             crate::session_move::apply(doc, text(action, "id"), text(action, "workspaceId"))?
         }
@@ -477,6 +489,9 @@ pub fn apply_action(doc: &mut Value, action: &Value) -> Result<()> {
             list_mut(doc, "sessions")?.push(session);
         }
         "update_session" => {
+            if let Some(selection)=action.get("imageSelection") {
+                if !selection.is_null()&&(!selection.is_object()||text(selection,"providerId").is_empty()||text(selection,"modelId").is_empty()){return Err("绘图模型选择格式错误".into());}
+            }
             let session = list_mut(doc, "sessions")?
                 .iter_mut()
                 .find(|s| text(s, "id") == text(action, "id"))
@@ -489,13 +504,14 @@ pub fn apply_action(doc: &mut Value, action: &Value) -> Result<()> {
                 "title",
                 "size",
                 "quality",
+                "imageSelection",
             ] {
                 if let Some(value) = action.get(key) {
                     let valid = if key == "referenceIds" {
                         value
                             .as_array()
                             .is_some_and(|items| items.iter().all(Value::is_string))
-                    } else {
+                    } else if key=="imageSelection" {true} else {
                         value.is_string()
                     };
                     if !valid {
@@ -539,6 +555,36 @@ pub fn apply_action(doc: &mut Value, action: &Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn workspace_rename_persists_and_preserves_all_relationships(){
+        let dir=tempfile::tempdir().unwrap();let store=Store::open(dir.path().into()).unwrap();let before=store.read().unwrap();
+        let saved=store.change(|doc|apply_action(doc,&json!({"type":"rename_workspace","id":"demo-plush","name":"  角色材质研究  "}))).unwrap();
+        let mut expected=before.clone();expected["workspaces"][0]["name"]=json!("角色材质研究");expected["revision"]=saved["revision"].clone();assert_eq!(saved,expected);
+        for name in [String::new(),"   ".into(),"bad\nname".into(),"x".repeat(81)]{assert!(store.change(|doc|apply_action(doc,&json!({"type":"rename_workspace","id":"demo-plush","name":name}))).is_err());}
+        assert!(store.change(|doc|apply_action(doc,&json!({"type":"rename_workspace","id":"missing","name":"New name"}))).is_err());
+        assert_eq!(store.read().unwrap(),saved);drop(store);
+        let reopened=Store::open(dir.path().into()).unwrap();assert_eq!(reopened.read().unwrap(),saved);
+    }
+    #[test]
+    fn logical_rename_and_session_model_choice_persist_without_changing_original_files(){
+        let dir=tempfile::tempdir().unwrap();let store=Store::open(dir.path().into()).unwrap();
+        let bytes=include_bytes!("../icons/icon.png");let asset=store.save_image(bytes,"reference.png").unwrap();
+        let asset_id=text(&asset,"id").to_owned();let path=store.asset_path(&asset).unwrap();
+        let settings=store.read().unwrap()["settings"].clone();let choice=settings["modelAssignments"]["image"].clone();
+        store.change(|doc|{list_mut(doc,"assets")?.push(asset.clone());Ok(())}).unwrap();
+        store.change(|doc|apply_action(doc,&json!({"type":"rename_asset","id":asset_id,"title":"  角色三视图  "}))).unwrap();
+        store.change(|doc|apply_action(doc,&json!({"type":"update_session","id":"demo-material","imageSelection":choice}))).unwrap();
+        let saved=store.read().unwrap();let renamed=find(&saved,"assets",&asset_id).unwrap();
+        let mut expected=asset.clone();expected["title"]=json!("角色三视图");assert_eq!(renamed,&expected);
+        assert_eq!(fs::read(&path).unwrap(),bytes);assert_eq!(saved["settings"],settings);
+        for title in ["", "   ", "bad\nname"]{assert!(store.change(|doc|apply_action(doc,&json!({"type":"rename_asset","id":asset_id,"title":title}))).is_err());}
+        assert_eq!(store.read().unwrap(),saved);drop(store);
+        let reopened=Store::open(dir.path().into()).unwrap();let restored=reopened.read().unwrap();
+        assert_eq!(find(&restored,"assets",&asset_id).unwrap()["title"],"角色三视图");
+        assert_eq!(find(&restored,"sessions","demo-material").unwrap()["imageSelection"],choice);
+        reopened.change(|doc|apply_action(doc,&json!({"type":"update_session","id":"demo-material","imageSelection":null}))).unwrap();
+        assert!(find(&reopened.read().unwrap(),"sessions","demo-material").unwrap()["imageSelection"].is_null());
+    }
     #[test]
     fn model_measurements_backfill_frozen_quotes_and_repair_journal_without_duplicates() {
         let dir = tempfile::tempdir().unwrap();

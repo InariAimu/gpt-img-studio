@@ -1,18 +1,22 @@
 import { OptionSelect } from './OptionSelect';
+import ReferencePicker from './ReferencePicker';
+import UserMessage from './UserMessage';
 import { useEffect, useMemo, useRef, useState, type ClipboardEvent } from 'react';
-import { Aperture, ArrowUp, Check, ChevronDown, Columns2, FolderInput, ImagePlus, LoaderCircle, MessageSquare, Plus, SlidersHorizontal, Sparkles, WandSparkles, X } from 'lucide-react';
-import { AssetCard, Empty, Modal, PromptDetails, ResultInformation, timeLabel } from './components';
-import type { Asset, ContextMode, Session } from './types';
+import { Aperture, ArrowUp, Check, Columns2, FolderInput, ImagePlus, LoaderCircle, MessageSquare, Plus, SlidersHorizontal, Sparkles, WandSparkles, X } from 'lucide-react';
+import { AssetCard, Empty, PromptDetails, ResultInformation, timeLabel } from './components';
+import type { Asset, ContextMode, ModelSelection, Session } from './types';
 import { desktop, type Studio } from './useStudio';
+import { imageConnection, providerSettings } from './modelProviders';
 import { availableQualities, extendedSizes, flexibleSizes, qualityOptions, sizeCaption, standardSizes, validateImageSize } from './imageOptions';
 
-export default function Workspace({ studio, session, onOpen, onBranch, onPreset, onSettings, onMove }: { studio: Studio; session: Session; onOpen: (id: string) => void; onBranch: (asset: Asset) => void; onPreset: (asset: Asset) => void; onSettings: () => void; onMove: (sessionId:string)=>void }) {
+export default function Workspace({ studio, session, onOpen, onBranch, onPreset, onSettings, onMove }: { studio: Studio; session: Session; onOpen: (id: string, scopeIds?:string[]) => void; onBranch: (asset: Asset) => void; onPreset: (asset: Asset) => void; onSettings: () => void; onMove: (sessionId:string)=>void }) {
   const [draft, setDraft] = useState(session.draft);
   const [original, setOriginal] = useState(session.originalPrompt || session.draft);
   const [referenceIds, setReferenceIds] = useState(session.referenceIds);
   const [context, setContext] = useState<ContextMode>(session.contextMode);
   const [size, setSize] = useState(session.size || 'auto');
   const [quality, setQuality] = useState(session.quality || 'auto');
+  const [imageSelection,setImageSelection]=useState<ModelSelection|null>(session.imageSelection??null);
   const [optionsOpen, setOptionsOpen] = useState(false);
   const [customSize, setCustomSize] = useState(!!session.size && ![...standardSizes, ...extendedSizes].some(option => option.value === session.size));
   const [customWidth, setCustomWidth] = useState(session.size?.split('x')[0] || '1024');
@@ -29,18 +33,23 @@ export default function Workspace({ studio, session, onOpen, onBranch, onPreset,
   const [generating, setGenerating] = useState(false);
   const [compareIds, setCompareIds] = useState<string[]>([]);
   const threadRef = useRef<HTMLDivElement>(null);
-  const latest = useRef({ draft, original, referenceIds, context, size, quality });
+  const latest = useRef({ draft, original, referenceIds, context, size, quality, imageSelection });
   const moveInProgress=useRef(false),saveTimeout=useRef(0),editorBusy=useRef(false);
   editorBusy.current=pasting||refining||generating;
-  latest.current = { draft, original, referenceIds, context, size, quality };
+  latest.current = { draft, original, referenceIds, context, size, quality, imageSelection };
   const sessionAssets = useMemo(() => studio.document.assets.filter(a => a.sessionId === session.id).sort((a, b) => a.createdAt.localeCompare(b.createdAt)), [studio.document.assets, session.id]);
   const referenceAssets = referenceIds.map(id => studio.document.assets.find(a => a.id === id)).filter((a): a is Asset => !!a);
   const runningJob = studio.document.jobs.find(j => j.sessionId === session.id && j.status === 'running');
-  const failedJob = studio.document.jobs.find(j => j.sessionId === session.id && ['failed', 'interrupted'].includes(j.status));
+  const latestJob=studio.document.jobs.find(j=>j.sessionId===session.id);
+  const failedJob=latestJob&&['failed','interrupted'].includes(latestJob.status)?latestJob:undefined;
   const workspace = studio.document.workspaces.find(w => w.id === session.workspaceId);
-  const canContinue = (!session.lastProviderId || session.lastProviderId === studio.document.settings.generation.providerId) && !!session.lastResponseId && studio.document.settings.generation.apiMode === 'responses' && session.lastProviderBaseUrl === studio.document.settings.generation.baseUrl && session.lastMainModel === studio.document.settings.generation.mainModel;
+  const settings=providerSettings(studio.document.settings);
+  const connection=imageConnection(settings,imageSelection),defaultImage=imageConnection(settings);
+  const canContinue=!connection.error&&!!session.lastResponseId&&settings.generation.apiMode==='responses'&&(!session.lastProviderId||session.lastProviderId===connection.provider?.id)&&session.lastProviderBaseUrl===connection.provider?.baseUrl&&session.lastMainModel===connection.mainModel?.id;
+  const hasImageKey=studio.providerKeys?!!studio.providerKeys[connection.selection.providerId]:studio.hasImageKey;
   const initial = useRef(true);
-  const model = studio.document.settings.generation.model;
+  const model=connection.model?.id??connection.selection.modelId;
+  const imageValue=imageSelection?JSON.stringify([imageSelection.providerId,imageSelection.modelId]):'';
   const supportsCustom = flexibleSizes(model);
   const sizes = supportsCustom ? [...standardSizes, ...extendedSizes] : standardSizes;
   const qualities = availableQualities(model);
@@ -68,16 +77,16 @@ export default function Workspace({ studio, session, onOpen, onBranch, onPreset,
     if (!desktop || moveInProgress.current) return;
     if (initial.current) { initial.current = false; return; }
     const timeout = window.setTimeout(() => {
-      void studio.mutate({ type: 'update_session', id: session.id, draft, originalPrompt: original, referenceIds, contextMode: context, size, quality }).catch(studio.report);
+      void studio.mutate({ type: 'update_session', id: session.id, draft, originalPrompt: original, referenceIds, contextMode: context, size, quality, imageSelection }).catch(studio.report);
     }, 650);
     saveTimeout.current=timeout;
     return () => window.clearTimeout(timeout);
-  }, [draft, original, referenceIds, context, size, quality, session.id, studio.mutate, studio.report]);
+  }, [draft, original, referenceIds, context, size, quality, imageSelection, session.id, studio.mutate, studio.report]);
   useEffect(() => () => {
     if (!desktop || moveInProgress.current) return;
     const value = latest.current;
-    if (value.draft !== session.draft || value.original !== session.originalPrompt || value.referenceIds.join() !== session.referenceIds.join() || value.context !== session.contextMode || value.size !== session.size || value.quality !== session.quality) {
-      void studio.mutate({ type: 'update_session', id: session.id, draft: value.draft, originalPrompt: value.original, referenceIds: value.referenceIds, contextMode: value.context, size: value.size, quality: value.quality }).catch(studio.report);
+    if (value.draft !== session.draft || value.original !== session.originalPrompt || value.referenceIds.join() !== session.referenceIds.join() || value.context !== session.contextMode || value.size !== session.size || value.quality !== session.quality || JSON.stringify(value.imageSelection)!==JSON.stringify(session.imageSelection??null)) {
+      void studio.mutate({ type: 'update_session', id: session.id, draft: value.draft, originalPrompt: value.original, referenceIds: value.referenceIds, contextMode: value.context, size: value.size, quality: value.quality, imageSelection:value.imageSelection }).catch(studio.report);
     }
   }, [session.id]);
   useEffect(()=>studio.registerSessionEditor(session.id,async action=>{
@@ -85,7 +94,7 @@ export default function Workspace({ studio, session, onOpen, onBranch, onPreset,
     moveInProgress.current=true;window.clearTimeout(saveTimeout.current);
     try {
       const value=latest.current;
-      await studio.mutate({type:'update_session',id:session.id,draft:value.draft,originalPrompt:value.original,referenceIds:value.referenceIds,contextMode:value.context,size:value.size,quality:value.quality});
+      await studio.mutate({type:'update_session',id:session.id,draft:value.draft,originalPrompt:value.original,referenceIds:value.referenceIds,contextMode:value.context,size:value.size,quality:value.quality,imageSelection:value.imageSelection});
       const document=await studio.mutate(action);
       const current=document.sessions.find(s=>s.id===session.id);
       if(current){latest.current={...value,referenceIds:current.referenceIds};setReferenceIds(current.referenceIds);}
@@ -127,7 +136,7 @@ export default function Workspace({ studio, session, onOpen, onBranch, onPreset,
   async function nameSession() {
     setNaming(true);
     try {
-      await studio.mutate({ type:'update_session',id:session.id,draft,originalPrompt:original,referenceIds,contextMode:context,size,quality });
+      await studio.mutate({ type:'update_session',id:session.id,draft,originalPrompt:original,referenceIds,contextMode:context,size,quality,imageSelection });
       await studio.nameSession(session.id); studio.notify('会话已自动命名');
     } catch(error){studio.report(error);}finally{setNaming(false);}
   }
@@ -138,14 +147,15 @@ export default function Workspace({ studio, session, onOpen, onBranch, onPreset,
   }
   async function generate() {
     if (pasting || generating || runningJob) return;
+    if (connection.error) { studio.notify(connection.error,true); return; }
     if (sizeError) { studio.notify(sizeError,true); return; }
     if (!draft.trim()) { studio.notify('先写下你想生成或修改的内容'); return; }
-    if (!studio.hasImageKey) { studio.notify('请先在设置中配置生成服务和 API Key'); onSettings(); return; }
+    if (!hasImageKey) { studio.notify('请先在设置中配置生成服务和 API Key'); onSettings(); return; }
     setGenerating(true);
     try {
       const effectiveContext = canContinue ? context : 'new';
-      await studio.mutate({ type: 'update_session', id: session.id, draft, originalPrompt: original || draft, referenceIds, contextMode: effectiveContext, size, quality });
-      await studio.generate({ sessionId: session.id, prompt: draft, originalPrompt: original || draft, referenceIds, size, quality, contextMode: effectiveContext });
+      await studio.mutate({ type: 'update_session', id: session.id, draft, originalPrompt: original || draft, referenceIds, contextMode: effectiveContext, size, quality, imageSelection });
+      await studio.generate({ sessionId: session.id, prompt: draft, originalPrompt: original || draft, referenceIds, size, quality, contextMode: effectiveContext, imageSelection:connection.selection });
       setView('conversation'); if (studio.document.settings.generation.apiMode === 'responses') setContext('continue');
     } catch (error) { studio.report(error); } finally { setGenerating(false); }
   }
@@ -157,12 +167,12 @@ export default function Workspace({ studio, session, onOpen, onBranch, onPreset,
         <div className="thread-scroll" ref={threadRef}>
           {view === 'conversation' && <div className="conversation-content">
             {!sessionAssets.length && !runningJob && <Empty title="从一个想法开始" description="添加参考图，写下 Prompt。生成结果和每一次修改都会留在这里。" icon={<Sparkles />} />}
-            {sessionAssets.map((asset, index) => <article className="conversation-turn" key={asset.id}><div className="turn-heading"><span className="avatar user-avatar">你</span><span>{timeLabel(asset.createdAt)}</span><span className="turn-number">第 {index + 1} 次生成</span></div><div className="user-prompt">{asset.originalPrompt || asset.submittedPrompt || '导入的图片'}</div><div className="assistant-heading"><span className="assistant-mark"><Sparkles size={13} /></span><span>GPT Image Studio</span><span className="muted">{asset.demo ? '设计示例' : '生成完成'}</span></div>
+            {sessionAssets.map((asset, index) => <article className="conversation-turn" key={asset.id}><div className="turn-heading"><span className="avatar user-avatar">你</span><span>{timeLabel(asset.createdAt)}</span><span className="turn-number">第 {index + 1} 次生成</span></div><UserMessage text={asset.originalPrompt||asset.submittedPrompt||'导入的图片'} referenceIds={asset.referenceIds} assets={studio.document.assets} imageUrl={studio.imageUrl} onOpen={onOpen}/><div className="assistant-heading"><span className="assistant-mark"><Sparkles size={13} /></span><span>GPT Image Studio</span><span className="muted">{asset.demo ? '设计示例' : '生成完成'}</span></div>
               <div className="result-card"><button className="conversation-image" aria-label={`放大 ${asset.title}`} onClick={() => onOpen(asset.id)}><img src={studio.imageUrl(asset)} alt={asset.title} loading="lazy" /></button>
               <ResultInformation asset={asset} studio={studio} expanded onOpen={() => onOpen(asset.id)} onBranch={() => onBranch(asset)} onPreset={() => onPreset(asset)} /></div>
             </article>)}
-            {runningJob && <div className="pending-generation"><LoaderCircle className="spin" /><div>正在生成图片<p>可以切换页面，任务会继续运行。</p></div></div>}
-            {failedJob && <div className="generation-error"><span>最近一次任务未完成</span><p>{failedJob.error}</p><button className="button secondary small" onClick={() => { setDraft(failedJob.prompt); setOriginal(failedJob.originalPrompt || failedJob.prompt); setReferenceIds(failedJob.referenceIds || []); setContext(failedJob.contextMode || 'new'); }}>重新载入此任务的输入</button></div>}
+            {runningJob&&<article className="conversation-turn"><div className="turn-heading"><span className="avatar user-avatar">你</span><span>{timeLabel(runningJob.createdAt)}</span><span className="turn-number">正在生成</span></div><UserMessage text={runningJob.originalPrompt||runningJob.prompt} referenceIds={runningJob.referenceIds} assets={studio.document.assets} imageUrl={studio.imageUrl} onOpen={onOpen}/><div className="pending-generation"><LoaderCircle className="spin"/><div>正在生成图片<p>可以切换页面，任务会继续运行。</p></div></div></article>}
+            {failedJob&&<article className="conversation-turn"><div className="turn-heading"><span className="avatar user-avatar">你</span><span>{timeLabel(failedJob.createdAt)}</span><span className="turn-number">未完成</span></div><UserMessage text={failedJob.originalPrompt||failedJob.prompt} referenceIds={failedJob.referenceIds} assets={studio.document.assets} imageUrl={studio.imageUrl} onOpen={onOpen}/><div className="generation-error"><span>最近一次任务未完成</span><p>{failedJob.error}</p><button className="button secondary small" onClick={() => { setDraft(failedJob.prompt); setOriginal(failedJob.originalPrompt || failedJob.prompt); setReferenceIds(failedJob.referenceIds || []); setContext(failedJob.contextMode || 'new'); if(failedJob.imageSelection)setImageSelection(failedJob.imageSelection); }}>重新载入此任务的输入</button></div></article>}
           </div>}
           {view === 'results' && <div className="results-grid">{[...sessionAssets].reverse().map(asset => <AssetCard key={asset.id} asset={asset} studio={studio} onSelect={() => onOpen(asset.id)} onOpen={() => onOpen(asset.id)} />)}{!sessionAssets.length && <Empty title="还没有生成结果" description="完成生成后，可以在这里集中浏览作品。" />}</div>}
           {view === 'compare' && <div className="comparison-content"><div className="comparison-title"><h2>并排比较</h2><p>选择两张结果，比较画面与实际提交的 Prompt。</p></div><div className="compare-selectors">{[0, 1].map(index => <label className="field" key={index}><span className="field-label">{index ? 'B · 对照结果' : 'A · 基准结果'}</span><OptionSelect value={compareIds[index] || ''} onValueChange={value=> setCompareIds(current => { const next = [...current]; next[index] = value; return next; })}><option value="">选择图片</option>{studio.document.assets.filter(a => a.workspaceId === session.workspaceId).map(asset => <option key={asset.id} value={asset.id}>{asset.title} · {timeLabel(asset.createdAt)}</option>)}</OptionSelect></label>)}</div><div className="comparison-grid">{[0, 1].map(index => { const asset = compared[index]; return asset ? <article key={index}><button className="compare-image" aria-label={`放大对比图片 ${index ? 'B' : 'A'}`} onClick={() => onOpen(asset.id)}><img src={studio.imageUrl(asset)} alt={asset.title} /></button><div className="compare-caption"><strong>{index ? 'B' : 'A'} · {asset.title}</strong><span>{asset.width} × {asset.height}</span></div><PromptDetails key={asset.id} asset={asset} studio={studio} compact /></article> : <div className="compare-empty" key={index}>选择一张图片</div>; })}</div></div>}
@@ -173,7 +183,7 @@ export default function Workspace({ studio, session, onOpen, onBranch, onPreset,
             {referenceAssets.length > 0 && <div className="dock-references">{referenceAssets.map(asset => <div className="dock-reference" key={asset.id}><button className="dock-reference-preview" aria-label={`查看参考图 ${asset.title}`} onClick={() => onOpen(asset.id)}><img src={studio.imageUrl(asset, true)} alt={asset.title} /></button><span>{asset.title}</span><button className="icon-button" aria-label={`移除参考图 ${asset.title}`} onClick={() => setReferenceIds(ids => ids.filter(id => id !== asset.id))}><X /></button></div>)}<span className="reference-count">{referenceIds.length} / 8</span></div>}
             <div className="composer-input-row"><button className="composer-attach" aria-label="选择参考图" title="选择或导入参考图" onClick={() => setPicking(true)} disabled={referenceIds.length >= 8 || pasting}><Plus /></button><textarea ref={textareaRef} rows={1} id="prompt-editor" aria-label="Prompt" className="composer-textarea" placeholder="描述你想要的图片，或粘贴图片进行编辑…" value={draft} onChange={event => { setDraft(event.target.value); setOriginal(event.target.value); }} onKeyDown={event => { if (event.ctrlKey && event.key === 'Enter') { event.preventDefault(); void generate(); } }} /></div>
             <div className="composer-toolbar">
-              <button className="composer-model" aria-label="配置图像模型" onClick={onSettings}><span className="composer-model-icon"><Aperture /></span><span>{model}</span><ChevronDown /></button>
+              <div className="composer-model-control"><span className="composer-model-icon"><Aperture/></span><OptionSelect className="composer-model" aria-label="绘图模型" title={connection.provider?`${connection.model?.name||model} · ${connection.provider.name}`:'选择绘图模型'} disabled={generating||!!runningJob} value={imageValue} onValueChange={value=>setImageSelection(value?{providerId:JSON.parse(value)[0],modelId:JSON.parse(value)[1]}:null)}><option value="">默认 · {defaultImage.model?.name||defaultImage.selection.modelId}</option>{imageSelection&&!connection.model&&<option value={imageValue} disabled>已移除 · {imageSelection.modelId}</option>}{settings.providers.map(provider=><optgroup key={provider.id} label={provider.name}>{provider.models.filter(m=>m.kind==='image').map(m=><option key={m.id} value={JSON.stringify([provider.id,m.id])}>{m.name||m.id}</option>)}</optgroup>)}</OptionSelect></div>
               <div className="composer-options-anchor" ref={optionsRef}><button className="composer-tool" aria-label="生成选项" aria-expanded={optionsOpen} onClick={() => setOptionsOpen(value => !value)}><SlidersHorizontal /><span>{size==='auto'&&quality==='auto'?'自动':`${sizeCaption(size)} · ${qualityOptions.find(option=>option.value===quality)?.label||quality}`}</span></button>
                 {optionsOpen && <section className="generation-options" role="dialog" aria-label="生成选项菜单"><div className="panel-label"><span>生成选项</span><button className="icon-button" aria-label="关闭生成选项" onClick={() => setOptionsOpen(false)}><X /></button></div>
                   <label className="field"><span className="field-label">图片尺寸</span><OptionSelect aria-label="图片尺寸" value={customSize?'custom':size} onValueChange={value=>{if(value==='custom'){const parts=/^(\d+)x(\d+)$/.exec(size);const width=parts?.[1]||'1024',height=parts?.[2]||'1024';setCustomSize(true);setCustomWidth(width);setCustomHeight(height);setSize(`${width}x${height}`);}else{setCustomSize(false);setSize(value);}}}>{sizes.map(option=><option key={option.value} value={option.value}>{option.label}</option>)}{supportsCustom&&<option value="custom">自定义尺寸…</option>}</OptionSelect></label>
@@ -183,12 +193,13 @@ export default function Workspace({ studio, session, onOpen, onBranch, onPreset,
               </div>
               <button className="composer-tool refine-tool" aria-label="优化 Prompt" onClick={()=>void refinePrompt()} disabled={refining||!draft.trim()||pasting}>{refining?<LoaderCircle className="spin" />:<Sparkles />}<span>优化</span></button><OptionSelect className="composer-refine-mode" aria-label="优化方式" value={refineMode} onValueChange={value=>setRefineMode(value)}><option value="faithful">忠实</option><option value="creative">创意</option></OptionSelect>
               <span className="composer-toolbar-spacer" />
-              <OptionSelect className="composer-context" aria-label="会话上下文" value={canContinue?context:'new'} onValueChange={value=>setContext(value as ContextMode)}><option value="new">独立生成</option><option value="continue" disabled={!canContinue}>接续结果</option></OptionSelect><button className="composer-send" aria-label="生成图片" title="生成图片（Ctrl+Enter）" disabled={generating||!!runningJob||pasting||!draft.trim()||!!sizeError} onClick={()=>void generate()}>{generating||runningJob||pasting?<LoaderCircle className="spin" />:<ArrowUp />}</button>
+              <OptionSelect className="composer-context" aria-label="会话上下文" value={canContinue?context:'new'} onValueChange={value=>setContext(value as ContextMode)}><option value="new">独立生成</option><option value="continue" disabled={!canContinue}>接续结果</option></OptionSelect><button className="composer-send" aria-label="生成图片" title="生成图片（Ctrl+Enter）" disabled={generating||!!runningJob||pasting||!draft.trim()||!!sizeError||!!connection.error} onClick={()=>void generate()}>{generating||runningJob||pasting?<LoaderCircle className="spin" />:<ArrowUp />}</button>
             </div>
           </div>
+          {connection.error&&<p className="composer-model-error" role="alert">{connection.error}</p>}
         </div>
       </section>
     </div>
-    {picking && <Modal title="选择参考图" onClose={() => setPicking(false)} className="reference-picker"><div className="picker-topline"><p>全局参考图与本地图片 · 最多 8 张</p><button className="button secondary" onClick={() => void importReferences()}><Plus />导入图片</button></div><div className="picker-grid">{studio.document.assets.filter(a => !a.demo).map(asset => <button key={asset.id} className={`picker-item ${referenceIds.includes(asset.id) ? 'picked' : ''}`} aria-pressed={referenceIds.includes(asset.id)} onClick={() => setReferenceIds(current => current.includes(asset.id) ? current.filter(id => id !== asset.id) : current.length < 8 ? [...current, asset.id] : current)}><img src={studio.imageUrl(asset, true)} alt={asset.title} /><span>{asset.title}</span>{referenceIds.includes(asset.id) && <span className="picked-check"><Check size={13} /></span>}</button>)}</div>{!studio.document.assets.some(a => !a.demo) && <Empty title="导入你的第一张参考图" description="原文件会完整保存，并生成 WebP 预览副本。" icon={<ImagePlus />}><button className="button primary" onClick={() => void importReferences()}><Plus />导入参考图</button></Empty>}<footer className="modal-footer"><span className="muted">已选 {referenceIds.length} 张</span><button className="button primary" onClick={() => setPicking(false)}>完成选择</button></footer></Modal>}
+    {picking && <ReferencePicker studio={studio} selectedIds={referenceIds} onChange={setReferenceIds} onImport={importReferences} onClose={()=>setPicking(false)}/>}
   </>;
 }

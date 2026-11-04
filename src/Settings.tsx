@@ -1,5 +1,5 @@
 import { useState, type SetStateAction } from 'react';
-import { Check, Database, HardDrive, KeyRound, LoaderCircle, Monitor, Paintbrush, Plus, Info, ChartNoAxesCombined, X, Server, ShieldCheck, Sparkles, Trash2 } from 'lucide-react';
+import { Check, Database, HardDrive, KeyRound, LoaderCircle, Paintbrush, Plus, Info, ChartNoAxesCombined, X, Server, ShieldCheck, Sparkles, Trash2 } from 'lucide-react';
 import type { ModelProvider, ModelRole, ProviderModel, Settings as SettingsType } from './types';
 import type { Studio } from './useStudio';
 import { providerSettings, resolvedSettings, textModel } from './modelProviders';
@@ -7,11 +7,12 @@ import UsageSettings from './UsageSettings';
 import { OptionSelect } from './OptionSelect';
 import { AutoSaveInput } from './AutoSaveInput';
 import { desktop } from './useStudio';
+import appPackage from '../package.json';
 
 const roles: {id:ModelRole;name:string;description:string}[] = [
   {id:'naming',name:'会话命名模型',description:'概括创作内容，自动生成简短的会话名称'},
   {id:'imageMain',name:'图片主模型',description:'通过 Responses 调用绘图工具，与绘图模型使用同一提供商'},
-  {id:'image',name:'绘图模型',description:'生成或编辑图片，决定画面的最终效果'},
+  {id:'image',name:'默认绘图模型',description:'会话默认使用的绘图模型，可在输入区单独切换'},
   {id:'refine',name:'Prompt 优化模型',description:'按忠实或创意模式改进 Prompt，建议采用后才会用于生成'},
 ];
 const presets:Record<ModelProvider['kind'],{name:string;baseUrl:string;models:ProviderModel[]}>={
@@ -47,8 +48,8 @@ export default function Settings({ studio }: { studio: Studio }) {
     <header className="page-header"><div><div className="page-eyebrow">按你的习惯创作</div><h1>设置</h1></div></header>
     <div className="settings-layout">
       <nav className="settings-nav" aria-label="设置分类">{([['general','通用',Sparkles],['providers','模型提供商',Server],['usage','用量统计',ChartNoAxesCombined],['storage','数据与存储',HardDrive],['about','关于',Info]] as const).map(([id,label,Icon])=><button key={id} className={tab===id?'active':''} aria-current={tab===id?'page':undefined} onClick={()=>setTab(id)}><Icon/>{label}</button>)}</nav>
-    <div className="settings-scroll"><div className={`settings-content ${tab==='providers'?'provider-settings-content':''}`}>
-      <p role="status" className={`settings-save-status ${studio.settingsError?'error':''}`}>{studio.settingsSaving?'正在保存…':studio.settingsError?`保存失败，已恢复上次有效设置：${studio.settingsError}`:desktop?'更改即时生效并自动保存；文字输入在回车或离开输入框时保存。':'浏览器预览：更改即时显示，不写入本地设置。'}</p>
+    <div className="settings-scroll"><div className={`settings-content ${tab==='providers'?'provider-settings-content':tab==='about'?'about-settings-content':''}`}>
+      {(tab!=='about'||studio.settingsSaving||studio.settingsError)&&<p role="status" className={`settings-save-status ${studio.settingsError?'error':''}`}>{studio.settingsSaving?'正在保存…':studio.settingsError?`保存失败，已恢复上次有效设置：${studio.settingsError}`:desktop?'更改即时生效并自动保存；文字输入在回车或离开输入框时保存。':'浏览器预览：更改即时显示，不写入本地设置。'}</p>}
       {studio.storageNotice&&<div className="generation-error">{studio.storageNotice}</div>}
       {tab==='general'&&<section className="settings-section default-models"><div className="settings-section-heading"><Sparkles/><div><h2>默认模型</h2><p>为不同任务选择合适的模型，可使用不同提供商。</p></div></div>
         {roles.map(role=>{const selected=draft.modelAssignments[role.id];return <div className="model-assignment" key={role.id}><div><strong>{role.name}</strong><p>{role.description}</p></div><OptionSelect aria-label={role.name} disabled={role.id==='imageMain'&&draft.generation.apiMode==='images'} value={JSON.stringify([selected.providerId,selected.modelId])} onValueChange={value=>assign(role.id,value)}>{options(role.id)}</OptionSelect></div>;})}
@@ -68,7 +69,18 @@ export default function Settings({ studio }: { studio: Studio }) {
       {tab==='usage'&&<UsageSettings studio={studio}/>}
       {tab==='general'&&<section className="settings-section"><div className="settings-section-heading"><Paintbrush/><div><h2>界面外观</h2><p>浅色、深色或跟随系统。</p></div></div><div className="form-columns"><label className="field"><span className="field-label">主题</span><OptionSelect value={draft.theme} onValueChange={value=>setDraft({...draft,theme:value as SettingsType['theme']})}><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></OptionSelect></label><label className="field"><span className="field-label">强调色</span><div className="accent-options">{['#f97316','#3b82f6','#10b981','#8b5cf6','#e85b73'].map(color=><button key={color} style={{background:color}} className={draft.accent===color?'selected':''} aria-label={`强调色 ${color}`} onClick={()=>setDraft({...draft,accent:color})}>{draft.accent===color&&<Check size={13}/>}</button>)}</div></label></div></section>}
       {tab==='storage'&&<section className="settings-section"><div className="settings-section-heading"><HardDrive/><div><h2>图库与存储</h2><p>原图、预览和创作记录保存在本机。</p></div></div><div className="storage-row"><Database/><div><strong>本地图库</strong><p className="data-directory">{studio.dataDir||'Windows 桌面版启动后显示'}</p></div><span className="subtle-badge">SQLite</span></div><div className="storage-location"><label className="field"><span className="field-label">数据目录</span><div className="storage-location-input"><input aria-label="本地数据目录" value={dataDirectory} onChange={e=>setDataDirectory(e.target.value)} disabled={relocating}/><button className="button secondary small" disabled={relocating} onClick={()=>void studio.chooseDataDirectory().then(path=>{if(typeof path==='string')setDataDirectory(path);}).catch(studio.report)}>选择目录</button></div></label><div className="storage-location-footer"><p>迁移数据库、原图、预览和用量日志。请使用空目录；校验完成后自动重启。</p><button className="button secondary small" disabled={changed||relocating||!dataDirectory.trim()||dataDirectory===studio.dataDir} title={changed?'正在保存设置…':undefined} onClick={()=>void moveData()}>{relocating?<LoaderCircle className="spin"/>:<HardDrive/>}{relocating?'正在迁移…':'迁移数据并重启'}</button></div></div></section>}
-      {tab==='about'&&<div className="settings-about"><Monitor/><div>GPT Image Studio <span>v0.1.0</span><p>本地图片生成与实验工作台</p></div></div>}
+      {tab==='about'&&<section className="settings-section settings-about" aria-labelledby="about-app-title">
+        <h2 id="about-app-title">GPT Image Studio</h2>
+        <p className="about-version">v{appPackage.version} · {appPackage.license}</p>
+        <dl className="about-details">{[
+          ['构建类型',import.meta.env.DEV?'开发构建':'正式版'],
+          ['运行环境',desktop?'Windows 桌面版':'浏览器预览'],
+          ['数据格式',`v${studio.document.schemaVersion}`],
+          ['数据目录',studio.dataDir||'在 Windows 桌面版中显示'],
+        ].map(([label,value])=><div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+        <p className="about-description">本地图片生成与实验工作台。</p>
+        <p className="about-note">基于 Tauri 2、React 与 TypeScript，支持工作区、参考图和多轮图片编辑。</p>
+      </section>}
     </div></div></div>
   </>;
 }

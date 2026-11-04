@@ -2,6 +2,7 @@ mod provider;
 mod providers;
 mod session_move;
 mod storage;
+mod taskbar;
 mod store;
 mod usage;
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -15,6 +16,7 @@ use store::{
 use tauri::{Emitter, Manager, State};
 
 fn changed(app: &tauri::AppHandle, document: Value) -> Value {
+    taskbar::sync(app, &document);
     let _ = app.emit("studio:changed", &document);
     document
 }
@@ -326,8 +328,7 @@ async fn generate(
     request: GenerationRequest,
 ) -> Result<Value> {
     let _operation = store.operation()?;
-    let initial = store.read()?;
-    find(&initial, "sessions", &request.session_id)?;
+    let initial = provider::generation_document(&store.read()?,&request)?;
     if request.prompt.trim().is_empty() {
         return Err("请先输入 Prompt".into());
     }
@@ -347,7 +348,7 @@ async fn generate(
     )?;
     let previous_response_id = provider::previous_response_id(&initial, &request)?;
     let job_id = id();
-    let job = json!({"id":job_id,"sessionId":request.session_id,"prompt":request.prompt,"originalPrompt":request.original_prompt,"referenceIds":request.reference_ids,"contextMode":request.context_mode,"previousResponseId":previous_response_id,"status":"running","createdAt":now(),"assetIds":[]});
+    let job = json!({"id":job_id,"sessionId":request.session_id,"prompt":request.prompt,"originalPrompt":request.original_prompt,"referenceIds":request.reference_ids,"contextMode":request.context_mode,"previousResponseId":previous_response_id,"imageSelection":initial["settings"]["modelAssignments"]["image"],"status":"running","createdAt":now(),"assetIds":[]});
     changed(
         &app,
         store.change(|doc| {
@@ -605,7 +606,14 @@ pub fn run() {
             tauri::WebviewWindowBuilder::from_config(app.handle(), &app.config().app.windows[0])?
                 .data_directory(webview_directory)
                 .build()?;
+            let document=app.state::<Store>().read().map_err(std::io::Error::other)?;
+            taskbar::initialize(app.handle(),&document);
             Ok(())
+        })
+        .on_window_event(|window,event| {
+            if window.label()=="main" && matches!(event,tauri::WindowEvent::Focused(true)) {
+                taskbar::focused(window.app_handle());
+            }
         })
         .invoke_handler(tauri::generate_handler![
             bootstrap,

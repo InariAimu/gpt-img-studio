@@ -20,6 +20,8 @@ pub struct GenerationRequest {
     pub size: String,
     pub quality: String,
     pub context_mode: String,
+    #[serde(default)]
+    pub image_selection: Option<Value>,
 }
 pub struct GeneratedImage {
     pub bytes: Vec<u8>,
@@ -286,6 +288,14 @@ fn image_data(
             ))
         })
         .collect()
+}
+
+pub fn generation_document(doc: &Value, request: &GenerationRequest) -> Result<Value> {
+    let session=find(doc,"sessions",&request.session_id)?;
+    let selection=request.image_selection.as_ref().or_else(||session.get("imageSelection").filter(|v|!v.is_null()));
+    let mut snapshot=doc.clone();
+    snapshot["settings"]=providers::generation_settings(&doc["settings"],selection)?;
+    Ok(snapshot)
 }
 
 pub fn previous_response_id(doc: &Value, request: &GenerationRequest) -> Result<Option<String>> {
@@ -608,6 +618,50 @@ pub async fn session_title(store: &Store, doc: &Value, session_id: &str) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn selection_fixture()->(Value,GenerationRequest){
+        let mut doc:Value=serde_json::from_str(include_str!("../../src/data/seed.json")).unwrap();
+        providers::migrate(&mut doc["settings"]).unwrap();
+        doc["settings"]["providers"].as_array_mut().unwrap().push(json!({"id":"alternate","name":"Alternate","kind":"custom","baseUrl":"https://alternate.example/v1","models":[{"id":"image-alt","name":"Image Alt","kind":"image","protocol":"responses","vision":true,"pricing":{"output":"7"}},{"id":"main-alt","name":"Main Alt","kind":"text","protocol":"responses","vision":true}]}));
+        let request:GenerationRequest=serde_json::from_value(json!({"sessionId":"demo-material","prompt":"test","originalPrompt":"test","referenceIds":[],"size":"auto","quality":"auto","contextMode":"new","imageSelection":{"providerId":"alternate","modelId":"image-alt"}})).unwrap();
+        (doc,request)
+    }
+    #[test]
+    fn session_image_choice_routes_connection_usage_and_context_without_changing_defaults(){
+        let (mut doc,mut request)=selection_fixture();let original=doc.clone();
+        let snapshot=generation_document(&doc,&request).unwrap();
+        assert_eq!(doc,original);
+        assert_eq!(snapshot["settings"]["generation"]["baseUrl"],"https://alternate.example/v1");
+        assert_eq!(snapshot["settings"]["generation"]["model"],"image-alt");
+        assert_eq!(snapshot["settings"]["generation"]["mainModel"],"main-alt");
+        assert_eq!(providers::credential_kind(providers::provider_for(&snapshot["settings"],"image").unwrap()),"provider:alternate");
+        let mut call=Invocation::new(&snapshot,"imageMain","demo-material","image","responses").unwrap();
+        call.image_model=Some(providers::model(&snapshot["settings"],"image").unwrap().clone());
+        let event=call.event(&json!({}),Some(200),None);
+        assert_eq!(event["provider"]["id"],"alternate");assert_eq!(event["model"],"main-alt");
+        assert_eq!(call.image_model.as_ref().unwrap()["pricing"]["output"],"7");
+        doc["sessions"][0]["lastResponseId"]=json!("resp-old");
+        doc["sessions"][0]["lastProviderBaseUrl"]=doc["settings"]["generation"]["baseUrl"].clone();
+        doc["sessions"][0]["lastMainModel"]=doc["settings"]["generation"]["mainModel"].clone();
+        doc["sessions"][0]["lastProviderId"]=doc["settings"]["generation"]["providerId"].clone();
+        request.context_mode="continue".into();
+        assert!(previous_response_id(&generation_document(&doc,&request).unwrap(),&request).is_err());
+        request.image_selection=None;
+        assert_eq!(previous_response_id(&generation_document(&doc,&request).unwrap(),&request).unwrap(),Some("resp-old".into()));
+        doc["sessions"][0]["imageSelection"]=json!({"providerId":"alternate","modelId":"image-alt"});
+        assert_eq!(generation_document(&doc,&request).unwrap()["settings"]["generation"]["model"],"image-alt");
+        request.image_selection=Some(doc["settings"]["modelAssignments"]["image"].clone());
+        assert_eq!(generation_document(&doc,&request).unwrap()["settings"],doc["settings"]);
+    }
+    #[test]
+    fn invalid_image_choices_fail_before_submission_and_images_mode_needs_no_main(){
+        let (mut doc,mut request)=selection_fixture();
+        for selection in [json!({"providerId":"missing","modelId":"image-alt"}),json!({"providerId":"alternate","modelId":"main-alt"}),json!({"providerId":"alternate","modelId":"missing"})]{request.image_selection=Some(selection);assert!(generation_document(&doc,&request).is_err());}
+        request.image_selection=Some(json!({"providerId":"alternate","modelId":"image-alt"}));
+        doc["settings"]["providers"][1]["models"].as_array_mut().unwrap().retain(|m|m["kind"]=="image");
+        assert!(generation_document(&doc,&request).is_err());
+        doc["settings"]["generation"]["apiMode"]=json!("images");
+        assert_eq!(generation_document(&doc,&request).unwrap()["settings"]["generation"]["providerId"],"alternate");
+    }
     #[test]
     fn continuation_keeps_the_latest_response_after_composer_is_cleared() {
         let mut doc = json!({"settings":{"generation":{"apiMode":"responses","baseUrl":"https://example.com/v1","mainModel":"test-main"}},"sessions":[{"id":"session","draft":"","referenceIds":[],"lastResponseId":"resp-first","lastProviderBaseUrl":"https://example.com/v1","lastMainModel":"test-main"}]});
@@ -619,6 +673,7 @@ mod tests {
             size: "1024x1024".into(),
             quality: "low".into(),
             context_mode: "continue".into(),
+            image_selection: None,
         };
         assert_eq!(
             previous_response_id(&doc, &request).unwrap().as_deref(),

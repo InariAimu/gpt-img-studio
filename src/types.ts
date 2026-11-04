@@ -1,4 +1,4 @@
-export type Page = 'gallery' | 'workspace' | 'references' | 'presets' | 'jobs' | 'settings';
+export type Page = 'gallery' | 'workspace-gallery' | 'workspace' | 'references' | 'presets' | 'jobs' | 'settings';
 export type PromptLayer = 'originalPrompt' | 'submittedPrompt' | 'revisedPrompt';
 export type ContextMode = 'new' | 'continue';
 export type ModelRole = 'image' | 'imageMain' | 'refine' | 'naming';
@@ -21,6 +21,7 @@ export interface Session {
   referenceIds: string[]; contextMode: ContextMode; createdAt: string;
   parentSessionId?: string; parentAssetId?: string; lastResponseId?: string;
   size?: string; quality?: string;
+  imageSelection?: ModelSelection | null;
   titleSource?: 'default' | 'manual' | 'automatic'; titleStatus?: 'pending' | 'failed' | 'complete'; titleError?: string; titleAttempted?: boolean;
   lastProviderBaseUrl?: string; lastMainModel?: string; lastProviderId?: string;
 }
@@ -34,12 +35,12 @@ export interface Asset {
   referenceOnly?: boolean; referenceSourceId?: string; sourceSessionId?: string;
 }
 export interface Preset { id: string; name: string; description: string; assetId: string; prompt: string; size: string; quality: string; referenceIds: string[]; createdAt: string }
-export interface Job { id: string; sessionId: string; prompt: string; originalPrompt?: string; referenceIds?: string[]; contextMode?: ContextMode; previousResponseId?: string; status: 'running' | 'completed' | 'failed' | 'interrupted'; createdAt: string; finishedAt?: string; error?: string; assetIds: string[] }
+export interface Job { id: string; sessionId: string; prompt: string; originalPrompt?: string; referenceIds?: string[]; contextMode?: ContextMode; previousResponseId?: string; imageSelection?: ModelSelection; status: 'running' | 'completed' | 'failed' | 'interrupted'; createdAt: string; finishedAt?: string; error?: string; assetIds: string[] }
 export interface StudioDocument { schemaVersion: number; revision: number; settings: Settings; workspaces: Workspace[]; sessions: Session[]; assets: Asset[]; presets: Preset[]; jobs: Job[] }
 export interface Bootstrap { document: StudioDocument; dataDir: string; hasImageKey: boolean; hasRefineKey: boolean; providerKeys?: Record<string, boolean>; storageNotice?: string | null }
 export interface UsageComponent { kind: string; model: string; usageAvailable: boolean; tokens: { totalInput: number | null; output: number | null; cacheRead: number | null; cacheWrite: number | null; reasoning: number | null }; estimatedCostUsd: string | null; estimateStatus: string; cacheBreakdownKnown: boolean; rawUsage: unknown }
 export interface UsageEvent { id: string; sessionId: string; operation: string; provider: { id: string; name: string; kind: string }; model: string; occurredAt: number; requestCount: number; statusCode: number | null; durationMs: number; estimatedCostUsd: string | null; estimateStatus: string; components: UsageComponent[] }
 export interface UsageSummary { totalModelUsages: number; modelJournalPath: string; totalRequests: number; unpricedRequests: number; knownEstimatedCostUsd: string; journalPath: string; records: UsageEvent[] }
-export interface GenerationRequest { sessionId: string; prompt: string; originalPrompt: string; referenceIds: string[]; size: string; quality: string; contextMode: ContextMode }
+export interface GenerationRequest { sessionId: string; prompt: string; originalPrompt: string; referenceIds: string[]; size: string; quality: string; contextMode: ContextMode; imageSelection?: ModelSelection }
 export interface RefineResult { prompt: string; model: string }
 export interface StudioAction { type: string; [key: string]: unknown }

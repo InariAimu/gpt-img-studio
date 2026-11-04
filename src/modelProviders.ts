@@ -1,4 +1,4 @@
-import type { ModelProvider, ModelRole, ProviderModel, Settings } from './types';
+import type { ModelProvider, ModelRole, ModelSelection, ProviderModel, Settings } from './types';
 
 export const textModel = (id: string, protocol: ProviderModel['protocol'] = 'responses', vision = true): ProviderModel => ({ id, name:id, kind:'text', protocol, vision });
 export function providerSettings(settings: Settings): Settings & { providers: ModelProvider[]; modelAssignments: NonNullable<Settings['modelAssignments']> } {
@@ -15,6 +15,15 @@ export function roleModel(settings: Settings, role: ModelRole) {
   const s=providerSettings(settings), selection=s.modelAssignments[role];
   const provider=s.providers.find(p=>p.id===selection.providerId);
   return {provider,model:provider?.models.find(m=>m.id===selection.modelId)};
+}
+export function imageConnection(settings: Settings, override?: ModelSelection | null) {
+  const configured=providerSettings(settings),selection=override??configured.modelAssignments.image;
+  const provider=configured.providers.find(p=>p.id===selection.providerId);
+  const model=provider?.models.find(m=>m.id===selection.modelId&&m.kind==='image');
+  const mainId=configured.modelAssignments.imageMain.modelId;
+  const mainModel=provider?.models.find(m=>m.id===mainId&&m.kind==='text'&&m.protocol==='responses')??provider?.models.find(m=>m.kind==='text'&&m.protocol==='responses');
+  const error=!provider||!model?'所选绘图模型已移除，请重新选择':configured.generation.apiMode==='responses'&&!mainModel?'此提供商还需配置支持 Responses 的语言主模型，或在设置中改用 Images API':'';
+  return {selection,provider,model,mainModel,error};
 }
 
 /** Keep the visible model/connection in sync before the native save completes. */
