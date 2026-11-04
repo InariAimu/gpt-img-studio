@@ -4,7 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import seed from './data/seed.json';
 import { SettingsWrites } from './settingsWrites';
-import type { Asset, Bootstrap, GenerationRequest, RefineResult, Settings, StudioAction, StudioDocument, UsageSummary } from './types';
+import type { Asset, Bootstrap, GenerationRequest, NetworkConfig, NetworkState, RefineResult, Settings, StudioAction, StudioDocument, UsageSummary } from './types';
 
 export const desktop = isTauri();
 export interface Toast { id: number; message: string; error: boolean }
@@ -137,9 +137,11 @@ export function useStudio() {
   const report = useCallback((error: unknown) => notify(error instanceof Error ? error.message : String(error), true), [notify]);
   const listModels = useCallback(async (providerId: string) => { requireDesktop(); await settingsWrites.current!.idle(); return invoke<string[]>('list_provider_models',{providerId}); },[requireDesktop]);
   const usageRecords = useCallback(async () => { requireDesktop(); return invoke<UsageSummary>('usage_records'); },[requireDesktop]);
+  const networkSettings = useCallback(async () => { requireDesktop(); await settingsWrites.current!.idle(); return invoke<NetworkState>('network_settings'); }, [requireDesktop]);
+  const testNetworkSettings = useCallback(async (settings: NetworkConfig) => { requireDesktop(); return invoke<{ elapsedMs: number }>('test_network_settings', { settings }); }, [requireDesktop]);
   const exportUsage = useCallback(async () => { requireDesktop(); const destination=await save({title:'导出用量记录',defaultPath:'image-studio-usage.jsonl',filters:[{name:'JSON Lines',extensions:['jsonl']}]});if(destination){await invoke('export_usage',{destination});notify('用量日志已导出');} },[requireDesktop,notify]);
   const chooseDataDirectory = useCallback(async () => { requireDesktop(); return open({directory:true,multiple:false,title:'选择空的数据目录'}); },[requireDesktop]);
   const relocateData = useCallback(async (destination:string) => { requireDesktop(); await settingsWrites.current!.idle(); await invoke('relocate_data',{destination});notify('正在迁移数据并重启应用…'); },[requireDesktop,notify]);
-  return { ...boot, ready, loadError, toasts, settingsSaving, settingsError, notify, report, refresh, mutate, saveSettings, importImages, importClipboardImages, nameSession, exportImage, generate, refine, imageUrl, listModels, usageRecords, exportUsage, chooseDataDirectory, relocateData, moveSession, registerSessionEditor };
+  return { ...boot, ready, loadError, toasts, settingsSaving, settingsError, notify, report, refresh, mutate, saveSettings, importImages, importClipboardImages, nameSession, exportImage, generate, refine, imageUrl, listModels, usageRecords, networkSettings, testNetworkSettings, exportUsage, chooseDataDirectory, relocateData, moveSession, registerSessionEditor };
 }
 export type Studio = ReturnType<typeof useStudio>;

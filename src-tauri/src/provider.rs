@@ -1,5 +1,5 @@
 use crate::{
-    providers,
+    network, providers,
     store::{find, text, Result, Store},
     usage::Invocation,
 };
@@ -136,13 +136,9 @@ fn session_header(
         builder
     }
 }
-fn client() -> Result<Client> {
-    Client::builder()
-        .connect_timeout(Duration::from_secs(30))
-        .timeout(Duration::from_secs(600))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|e| e.to_string())
+fn client(settings: &Value) -> Result<Client> {
+    network::Settings::from_settings(settings)?
+        .client(Duration::from_secs(600), Duration::from_secs(30))
 }
 async fn response_json(
     response: reqwest::Response,
@@ -211,7 +207,7 @@ pub async fn list_models(doc: &Value, provider_id: &str) -> Result<Value> {
     let provider = find(&doc["settings"], "providers", provider_id)?;
     let url = base_url(text(provider, "baseUrl"))?;
     let key = get_key(&providers::credential_kind(provider), &url)?;
-    let response = client()?
+    let response = client(&doc["settings"])?
         .get(format!("{url}/models"))
         .bearer_auth(&key)
         .send()
@@ -326,7 +322,7 @@ pub async fn generate(
     let url = base_url(text(settings, "baseUrl"))?;
     let host = providers::provider_for(&doc["settings"], "image")?;
     let key = get_key(&providers::credential_kind(host), &url)?;
-    let client = client()?;
+    let client = client(&doc["settings"])?;
     if request.prompt.trim().is_empty() {
         return Err("请先输入 Prompt".into());
     }
@@ -494,7 +490,7 @@ pub async fn text_response(
     };
     let call = Invocation::new(doc, role, session_id, role, protocol)?;
     let response = session_header(
-        client()?.post(format!(
+        client(settings)?.post(format!(
             "{url}/{}",
             if responses {
                 "responses"

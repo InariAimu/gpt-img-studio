@@ -6,6 +6,7 @@ export interface ModelSelection { providerId: string; modelId: string }
 export interface ProviderModel { id: string; name: string; kind: 'text' | 'image'; protocol: 'responses' | 'chat_completions'; vision: boolean; pricing?: Partial<Record<'input' | 'output' | 'cachedInput' | 'imageInput' | 'cachedImageInput' | 'cacheWrite', string>> }
 export interface ModelProvider { id: string; name: string; kind: 'openai' | 'deepseek' | 'opencode' | 'custom'; baseUrl: string; models: ProviderModel[] }
 export interface Settings {
+  network?: NetworkConfig;
   theme: 'system' | 'light' | 'dark';
   accent: string;
   autoNameSessions?: boolean;
@@ -14,6 +15,11 @@ export interface Settings {
   generation: { baseUrl: string; apiMode: 'responses' | 'images'; model: string; mainModel: string; providerId?: string };
   refine: { useImageConnection: boolean; baseUrl: string; model: string };
   library: { mode: 'local'; nasUrl: string };
+}
+export interface NetworkConfig { mode: 'system' | 'manual' | 'direct'; proxyUrl: string }
+export interface NetworkState {
+  settings: NetworkConfig;
+  routes: { id: string; name: string; configured: boolean; invalid: boolean; proxy: string | null }[];
 }
 export interface Workspace { id: string; name: string; createdAt: string }
 export interface Session {

@@ -412,6 +412,19 @@ kbd {font:var(--font-size-min) 'Segoe UI',sans-serif;color:var(--text-3);border:
 .settings-content.about-settings-content {max-width:768px;}
 .settings-save-status {font-size:var(--font-size-min);line-height:1.8;color:var(--text-3);margin-bottom:18px;}
 .settings-save-status.error {color:var(--danger);}
+.network-settings>.field {max-width:560px;}
+.network-actions {display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:18px 0 10px 29px;}
+.network-actions svg {width:14px;height:14px;}
+.network-result {margin:10px 0 10px 29px;font-size:12px;line-height:1.7;overflow-wrap:anywhere;color:var(--text-2);}
+.network-result.error {color:var(--danger);}
+.network-routes {margin:22px 0 0 29px;padding-top:16px;border-top:1px solid var(--line);}
+.network-routes-heading {display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px;}
+.network-routes-heading h3 {font-size:12px;font-weight:500;}
+.network-routes dl {margin:0 0 14px;}
+.network-routes dl>div {display:grid;grid-template-columns:minmax(120px,1fr) minmax(0,2fr);gap:20px;padding:8px 0;font-size:12px;}
+.network-routes dt {color:var(--text-2);overflow-wrap:anywhere;}
+.network-routes dd {margin:0;text-align:right;overflow-wrap:anywhere;font-family:Consolas,monospace;}
+.network-routes .network-result {margin-left:0;}
 .new-model {display:flex;align-items:flex-start;gap:8px;}
 .new-model .field {flex:1;margin-bottom:0;}
 .default-models {border:1px solid var(--line);}

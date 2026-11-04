@@ -1,3 +1,4 @@
+mod network;
 mod provider;
 mod providers;
 mod session_move;
@@ -70,6 +71,7 @@ fn save_settings(
     provider_keys: Option<std::collections::HashMap<String, String>>,
 ) -> Result<Value> {
     let _operation = store.operation()?;
+    network::normalize(&mut settings)?;
     if settings["providers"].is_array() {
         providers::normalize(&mut settings)?;
         if let Some(keys) = provider_keys {
@@ -119,6 +121,14 @@ fn save_settings(
         })?,
     );
     bootstrap_value(&app, &store)
+}
+#[tauri::command]
+fn network_settings(store: State<'_, Store>) -> Result<Value> {
+    network::view(&store.read()?["settings"])
+}
+#[tauri::command]
+async fn test_network_settings(settings: network::Settings) -> Result<Value> {
+    network::test(settings).await
 }
 #[tauri::command]
 async fn import_assets(
@@ -619,6 +629,8 @@ pub fn run() {
             bootstrap,
             dispatch,
             save_settings,
+            network_settings,
+            test_network_settings,
             import_assets,
             import_image_data,
             name_session,
