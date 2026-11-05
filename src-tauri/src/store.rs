@@ -39,7 +39,7 @@ pub fn find<'a>(doc: &'a Value, collection: &str, item_id: &str) -> Result<&'a V
 
 pub struct Store {
     pub root: PathBuf,
-    connection: Mutex<Connection>,
+    pub(crate) connection: Mutex<Connection>,
     relocating: AtomicBool,
     operations: AtomicUsize,
 }

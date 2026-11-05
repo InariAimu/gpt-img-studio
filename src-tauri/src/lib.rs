@@ -8,6 +8,8 @@ mod storage;
 mod taskbar;
 mod store;
 mod usage;
+mod sync;
+mod gallery;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use provider::GenerationRequest;
 use serde::Deserialize;
@@ -50,6 +52,28 @@ fn bootstrap_value(app: &tauri::AppHandle, store: &Store) -> Result<Value> {
 fn bootstrap(app: tauri::AppHandle, store: State<'_, Store>) -> Result<Value> {
     bootstrap_value(&app, &store)
 }
+#[tauri::command]
+fn gallery_settings(store: State<'_, Store>) -> Result<Value> { gallery::view(&store) }
+#[tauri::command]
+fn save_gallery_settings(store: State<'_, Store>, config: gallery::Config, token: Option<String>, forget_token: bool) -> Result<Value> {
+    gallery::save(&store, config, token, forget_token)
+}
+#[tauri::command]
+async fn test_gallery_settings(store: State<'_, Store>, config: gallery::Config, token: Option<String>) -> Result<Value> {
+    gallery::test(&store, config, token).await
+}
+#[tauri::command]
+fn sync_status(store:State<'_,Store>,runtime:State<'_,sync::Runtime>)->Result<Value>{sync::view(&store,&runtime)}
+#[tauri::command]
+fn set_sync_editing(runtime:State<'_,sync::Runtime>,editing:bool){sync::set_editing(&runtime,editing)}
+#[tauri::command]
+fn save_sync_config(store:State<'_,Store>,runtime:State<'_,sync::Runtime>,config:sync::Config,token:Option<String>)->Result<Value>{sync::configure(&store,&runtime,config,token)}
+#[tauri::command]
+fn import_sync_config(store:State<'_,Store>,runtime:State<'_,sync::Runtime>,path:PathBuf)->Result<Value>{sync::import_config(&store,&runtime,path)}
+#[tauri::command]
+async fn sync_now(app:tauri::AppHandle)->Result<Value>{sync::run(&app).await}
+#[tauri::command]
+fn resolve_sync_conflict(app:tauri::AppHandle,store:State<'_,Store>,runtime:State<'_,sync::Runtime>,key:String,use_local:bool)->Result<Value>{Ok(changed(&app,sync::resolve(&store,&runtime,key,use_local)?))}
 #[tauri::command]
 fn dispatch(app: tauri::AppHandle, store: State<'_, Store>, action: Value) -> Result<Value> {
     if action["type"] == "move_session" {
@@ -589,8 +613,13 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let location = app.path().app_data_dir()?;
-            let root = storage::resolve(&location).map_err(std::io::Error::other)?;
+            let root = if let Some(root)=std::env::var_os("GPT_IMG_STUDIO_DATA_DIR") {
+                let root=PathBuf::from(root);
+                if !root.is_absolute(){return Err("GPT_IMG_STUDIO_DATA_DIR 必须是绝对路径".into());}
+                root
+            } else {storage::resolve(&location).map_err(std::io::Error::other)?};
             let store = Store::open(root).map_err(std::io::Error::other)?;
+            store.init_sync().map_err(std::io::Error::other)?;
             let saved = store.read().map_err(std::io::Error::other)?;
             let mut settings = saved["settings"].clone();
             if providers::migrate(&mut settings).map_err(std::io::Error::other)? {
@@ -619,6 +648,10 @@ pub fn run() {
                 .allow_directory(store.root.join("thumbnails"), true)?;
             let webview_directory = store.root.join("webview2");
             app.manage(store);
+            app.manage(sync::Runtime::default());
+            if let Some(path)=std::env::var_os("GPT_IMG_STUDIO_SYNC_CONFIG") {
+                sync::import_config(&app.state::<Store>(),&app.state::<sync::Runtime>(),PathBuf::from(path)).map_err(std::io::Error::other)?;
+            }
             tauri::WebviewWindowBuilder::from_config(app.handle(), &app.config().app.windows[0])?
                 .data_directory(webview_directory)
                 .build()?;
@@ -633,6 +666,15 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             bootstrap,
+            gallery_settings,
+            save_gallery_settings,
+            test_gallery_settings,
+            sync_status,
+            set_sync_editing,
+            save_sync_config,
+            import_sync_config,
+            sync_now,
+            resolve_sync_conflict,
             dispatch,
             preview_session_delete,
             delete_session,

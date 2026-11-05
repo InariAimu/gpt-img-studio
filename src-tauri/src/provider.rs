@@ -100,10 +100,16 @@ pub fn save_key(kind: &str, url: &str, key: &str) -> Result<()> {
         .set_password(key.trim())
         .map_err(|e| format!("无法保存 API Key：{e}"))
 }
-fn get_key(kind: &str, url: &str) -> Result<String> {
+pub(crate) fn get_key(kind: &str, url: &str) -> Result<String> {
     credential_entry(kind, url)?
         .get_password()
         .map_err(|_| "请先在设置中保存此服务的 API Key".into())
+}
+pub(crate) fn delete_key(kind: &str, url: &str) -> Result<()> {
+    match credential_entry(kind, url)?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(format!("无法清除系统凭据：{error}")),
+    }
 }
 pub fn copy_legacy_keys(old: &Value, settings: &Value) -> Result<()> {
     for (kind, id, url) in [

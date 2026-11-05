@@ -49,6 +49,19 @@ export default function Workspace({ studio, session, onOpen, onBranch, onCopyInp
   const canContinue=!connection.error&&!!session.lastResponseId&&settings.generation.apiMode==='responses'&&(!session.lastProviderId||session.lastProviderId===connection.provider?.id)&&session.lastProviderBaseUrl===connection.provider?.baseUrl&&session.lastMainModel===connection.mainModel?.id;
   const hasImageKey=studio.providerKeys?!!studio.providerKeys[connection.selection.providerId]:studio.hasImageKey;
   const initial = useRef(true);
+  const persistedSession=useRef(session);
+  useEffect(()=>{
+    const previous=persistedSession.current;persistedSession.current=session;
+    if(editorBusy.current||moveInProgress.current)return;
+    const value=latest.current;
+    if(value.draft===previous.draft)setDraft(session.draft);
+    if(value.original===(previous.originalPrompt||previous.draft))setOriginal(session.originalPrompt||session.draft);
+    if(JSON.stringify(value.referenceIds)===JSON.stringify(previous.referenceIds))setReferenceIds(session.referenceIds);
+    if(value.context===previous.contextMode)setContext(session.contextMode);
+    if(value.size===(previous.size||'auto'))setSize(session.size||'auto');
+    if(value.quality===(previous.quality||'auto'))setQuality(session.quality||'auto');
+    if(JSON.stringify(value.imageSelection)===JSON.stringify(previous.imageSelection??null))setImageSelection(session.imageSelection??null);
+  },[session]);
   const model=connection.model?.id??connection.selection.modelId;
   const imageValue=imageSelection?JSON.stringify([imageSelection.providerId,imageSelection.modelId]):'';
   const supportsCustom = flexibleSizes(model);

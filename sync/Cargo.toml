@@ -1,0 +1,26 @@
+[package]
+name = "studio-sync"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[features]
+server = ["dep:axum", "dep:tokio-util", "dep:subtle"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+uuid = { version = "1", features = ["v4"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls", "system-proxy", "socks", "stream"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "io-util", "time", "signal"] }
+futures-util = "0.3"
+axum = { version = "0.8", optional = true }
+tokio-util = { version = "0.7", features = ["io"], optional = true }
+subtle = { version = "2", optional = true }
+
+[[bin]]
+name = "studio-sync-server"
+path = "src/main.rs"
+required-features = ["server"]

@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import seed from './data/seed.json';
 import { SettingsWrites } from './settingsWrites';
+import { SYNC_INTERVAL_MS, type SyncView } from './syncState';
 import type { Asset, Bootstrap, GenerationRequest, NetworkConfig, NetworkState, RefineResult, SessionDeletePreview, Settings, StudioAction, StudioDocument, UsageSummary } from './types';
 
 export const desktop = isTauri();
@@ -15,6 +16,9 @@ export function useStudio() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsError, setSettingsError] = useState('');
+  const [sync, setSync] = useState<SyncView>();
+  const [syncBusy, setSyncBusy] = useState(false);
+  const syncBusyRef = useRef(false);
   const bootRef = useRef(boot); bootRef.current = boot;
   const committedSettings = useRef(boot.document.settings);
   const settingsWrites = useRef<SettingsWrites<Settings, Bootstrap> | null>(null);
@@ -67,6 +71,47 @@ export function useStudio() {
     void refresh().catch(error => setLoadError(String(error)));
     return () => { active = false; dispose?.(); };
   }, [accept, refresh]);
+  const refreshSync = useCallback(async () => {
+    if (!desktop) return;
+    const value = await invoke<SyncView>('sync_status');
+    setSync(value); return value;
+  }, []);
+  const syncNow = useCallback(async () => {
+    if (!desktop || syncBusyRef.current) return;
+    syncBusyRef.current=true; setSyncBusy(true);
+    try {
+      for(const editor of sessionEditors.current.values())await editor({type:'flush_session'});
+      await settingsWrites.current!.idle();
+      const value=await invoke<SyncView>('sync_now');
+      setSync(value); await refresh(); return value;
+    } catch(error) {
+      await refreshSync().catch(()=>{}); throw error;
+    } finally {syncBusyRef.current=false;setSyncBusy(false);}
+  }, [refresh, refreshSync]);
+  useEffect(() => {
+    if (!desktop) return;
+    let active=true, dispose:(()=>void)|undefined;
+    void listen<SyncView>('studio:sync',e=>{if(active)setSync(e.payload);}).then(fn=>active?dispose=fn:fn());
+    const isEditing=()=>!!document.activeElement?.matches('input,textarea,[contenteditable="true"]');
+    const editingChanged=()=>queueMicrotask(()=>{if(active)void invoke('set_sync_editing',{editing:isEditing()}).catch(()=>{});});
+    document.addEventListener('focusin',editingChanged);document.addEventListener('focusout',editingChanged);
+    editingChanged();
+    const tick=async()=>{
+      if(!active||syncBusyRef.current||isEditing())return;
+      try {
+        const state=await refreshSync();
+        if(!active||!state?.config.enabled||isEditing())return;
+        await syncNow();
+      }catch{/* The titlebar and sync page show errors; background attempts stay quiet. */}
+    };
+    const timer=window.setInterval(()=>void tick(),SYNC_INTERVAL_MS);
+    return()=>{active=false;dispose?.();window.clearInterval(timer);document.removeEventListener('focusin',editingChanged);document.removeEventListener('focusout',editingChanged);};
+  },[refreshSync,syncNow]);
+  useEffect(()=>{
+    if(!desktop||!ready)return;
+    const timer=window.setTimeout(()=>void refreshSync().catch(()=>{}),500);
+    return()=>window.clearTimeout(timer);
+  },[ready,boot.document.revision,refreshSync]);
   const requireDesktop = useCallback(() => {
     if (!desktop) throw new Error('浏览器中仅提供界面预览，请在 Windows 桌面版使用此功能。');
   }, []);
@@ -160,6 +205,6 @@ export function useStudio() {
   const exportUsage = useCallback(async () => { requireDesktop(); const destination=await save({title:'导出用量记录',defaultPath:'image-studio-usage.jsonl',filters:[{name:'JSON Lines',extensions:['jsonl']}]});if(destination){await invoke('export_usage',{destination});notify('用量日志已导出');} },[requireDesktop,notify]);
   const chooseDataDirectory = useCallback(async () => { requireDesktop(); return open({directory:true,multiple:false,title:'选择空的数据目录'}); },[requireDesktop]);
   const relocateData = useCallback(async (destination:string) => { requireDesktop(); await settingsWrites.current!.idle(); await invoke('relocate_data',{destination});notify('正在迁移数据并重启应用…'); },[requireDesktop,notify]);
-  return { ...boot, ready, loadError, toasts, settingsSaving, settingsError, notify, report, refresh, mutate, saveSettings, importImages, importClipboardImages, nameSession, exportImage, generate, refine, imageUrl, listModels, usageRecords, networkSettings, testNetworkSettings, exportUsage, chooseDataDirectory, relocateData, moveSession, registerSessionEditor, previewDeleteSession, deleteSession };
+  return { ...boot, ready, loadError, toasts, settingsSaving, settingsError, sync, syncBusy, syncNow, refreshSync, notify, report, refresh, mutate, saveSettings, importImages, importClipboardImages, nameSession, exportImage, generate, refine, imageUrl, listModels, usageRecords, networkSettings, testNetworkSettings, exportUsage, chooseDataDirectory, relocateData, moveSession, registerSessionEditor, previewDeleteSession, deleteSession };
 }
 export type Studio = ReturnType<typeof useStudio>;
