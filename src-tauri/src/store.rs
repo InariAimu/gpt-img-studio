@@ -486,6 +486,9 @@ pub fn apply_action(doc: &mut Value, action: &Value) -> Result<()> {
         "create_session" => {
             let workspace_id = text(action, "workspaceId");
             find(doc, "workspaces", workspace_id)?;
+            if ["parentAssetId", "copyInputAssetId", "presetId"].iter().filter(|key| !text(action, key).is_empty()).count() > 1 {
+                return Err("每次新建会话只能选择一种输入来源".into());
+            }
             let mut session = new_session(
                 workspace_id,
                 if text(action, "title").is_empty() {
@@ -504,6 +507,34 @@ pub fn apply_action(doc: &mut Value, action: &Value) -> Result<()> {
                 if asset["demo"] != true {
                     session["referenceIds"] = json!([asset["id"]]);
                 }
+            }
+            if !text(action, "copyInputAssetId").is_empty() {
+                let asset = find(doc, "assets", text(action, "copyInputAssetId"))?;
+                let prompt = if text(asset,"submittedPrompt").trim().is_empty() { text(asset,"originalPrompt") } else { text(asset,"submittedPrompt") };
+                if prompt.trim().is_empty() { return Err("此图片没有可复制的生成输入".into()); }
+                let references = asset["referenceIds"].as_array().cloned().unwrap_or_default();
+                if references.len() > 8 { return Err("本轮参考图超过 8 张，无法复制".into()); }
+                for reference in &references {
+                    let reference_id = reference.as_str().ok_or("本轮参考图记录无效")?;
+                    find(doc,"assets",reference_id).map_err(|_| "本轮参考图已缺失，请先恢复参考图".to_string())?;
+                }
+                session["draft"] = json!(prompt);
+                session["originalPrompt"] = json!(if text(asset,"originalPrompt").trim().is_empty() { prompt } else { text(asset,"originalPrompt") });
+                session["referenceIds"] = json!(references);
+                session["titleSource"] = json!("default");
+                if !text(asset,"sessionId").is_empty() { session["parentSessionId"] = asset["sessionId"].clone(); }
+                for key in ["size", "quality"] {
+                    if !text(asset,key).is_empty() { session[key] = asset[key].clone(); }
+                }
+                let selection = doc["jobs"].as_array().into_iter().flatten()
+                    .find(|job| job["assetIds"].as_array().is_some_and(|ids| ids.iter().any(|asset_id| asset_id == &asset["id"])))
+                    .and_then(|job| job.get("imageSelection"))
+                    .filter(|selection| !text(selection,"providerId").is_empty() && !text(selection,"modelId").is_empty())
+                    .cloned()
+                    .or_else(|| doc["settings"]["providers"].as_array().into_iter().flatten()
+                        .find(|provider| text(provider,"baseUrl") == text(asset,"providerBaseUrl") && provider["models"].as_array().is_some_and(|models| models.iter().any(|model| model["kind"] == "image" && model["id"] == asset["model"])))
+                        .map(|provider| json!({"providerId":provider["id"],"modelId":asset["model"]})));
+                if let Some(selection) = selection { session["imageSelection"] = selection; }
             }
             if !text(action, "presetId").is_empty() {
                 let preset = find(doc, "presets", text(action, "presetId"))?;
@@ -582,6 +613,85 @@ pub fn apply_action(doc: &mut Value, action: &Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn session_input_copy_document() -> Value {
+        let mut doc: Value = serde_json::from_str(SEED).unwrap();
+        doc["assets"][0]["submittedPrompt"] = json!("实际提交的这一轮提示词");
+        doc["assets"][0]["originalPrompt"] = json!("原始创作意图");
+        doc["assets"][0]["revisedPrompt"] = json!("服务端修订文本，不作为输入副本");
+        doc["assets"][0]["referenceIds"] = json!(["demo-botanic","demo-mountain"]);
+        doc["assets"][0]["size"] = json!("1536x1024");
+        doc["assets"][0]["quality"] = json!("medium");
+        doc["assets"][0]["model"] = json!("original-image-model");
+        doc["assets"][0]["providerBaseUrl"] = json!("https://original.example/v1");
+        doc["assets"][0]["demo"] = json!(false);
+        doc["assets"][0]["responseId"] = json!("resp-result");
+        doc["assets"][0]["previousResponseId"] = json!("resp-previous");
+        doc["sessions"][0]["draft"] = json!("后来编辑但未提交的内容");
+        doc["sessions"][0]["referenceIds"] = json!(["demo-night"]);
+        doc["sessions"][0]["lastResponseId"] = json!("resp-latest");
+        doc["sessions"][0]["imageSelection"] = json!({"providerId":"changed","modelId":"changed-model"});
+        doc["jobs"] = json!([{"id":"original-job","sessionId":"demo-material","assetIds":["demo-fox-v3"],"imageSelection":{"providerId":"original-provider","modelId":"original-image-model"}}]);
+        doc["settings"]["providers"] = json!([{"id":"original-provider","baseUrl":"https://original.example/v1","models":[{"id":"original-image-model","kind":"image"}]}]);
+        doc
+    }
+    #[test]
+    fn session_input_copy_uses_selected_result_inputs_and_preserves_source_data() {
+        let mut doc = session_input_copy_document();
+        let before = doc.clone();
+        apply_action(&mut doc,&json!({"type":"create_session","workspaceId":"demo-plush","title":"输入副本","copyInputAssetId":"demo-fox-v3"})).unwrap();
+        let copy = doc["sessions"].as_array().unwrap().last().unwrap();
+        assert_eq!(copy["draft"],"实际提交的这一轮提示词");
+        assert_eq!(copy["originalPrompt"],"原始创作意图");
+        assert_eq!(copy["referenceIds"],json!(["demo-botanic","demo-mountain"]));
+        assert_eq!(copy["size"],"1536x1024");
+        assert_eq!(copy["quality"],"medium");
+        assert_eq!(copy["imageSelection"],before["jobs"][0]["imageSelection"]);
+        assert_eq!(copy["contextMode"],"new");
+        assert_eq!(copy["titleSource"],"default");
+        assert_eq!(copy["parentSessionId"],"demo-material");
+        assert!(copy.get("parentAssetId").is_none());
+        for key in ["lastResponseId","lastProviderId","lastProviderBaseUrl","lastMainModel"] { assert!(copy.get(key).is_none()); }
+        assert_ne!(copy["id"],before["sessions"][0]["id"]);
+        doc["sessions"].as_array_mut().unwrap().pop();
+        assert_eq!(doc,before);
+    }
+    #[test]
+    fn session_input_copy_without_job_recovers_model_and_supports_text_only_results() {
+        let mut doc = session_input_copy_document();
+        doc["jobs"] = json!([]);
+        doc["assets"][0]["referenceIds"] = json!([]);
+        doc["assets"][0]["submittedPrompt"] = json!("");
+        apply_action(&mut doc,&json!({"type":"create_session","workspaceId":"demo-plush","copyInputAssetId":"demo-fox-v3"})).unwrap();
+        let copy = doc["sessions"].as_array().unwrap().last().unwrap();
+        assert_eq!(copy["draft"],"原始创作意图");
+        assert_eq!(copy["referenceIds"],json!([]));
+        assert_eq!(copy["imageSelection"],json!({"providerId":"original-provider","modelId":"original-image-model"}));
+    }
+    #[test]
+    fn session_input_copy_rejects_missing_inputs_and_ambiguous_sources_atomically() {
+        for kind in ["missing-reference","missing-prompt","ambiguous-source","too-many-references"] {
+            let mut doc = session_input_copy_document();
+            let mut action = json!({"type":"create_session","workspaceId":"demo-plush","copyInputAssetId":"demo-fox-v3"});
+            match kind {
+                "missing-reference" => doc["assets"][0]["referenceIds"] = json!(["missing"]),
+                "missing-prompt" => {doc["assets"][0]["submittedPrompt"] = json!("");doc["assets"][0]["originalPrompt"] = json!("");},
+                "ambiguous-source" => action["parentAssetId"] = json!("demo-fox-v3"),
+                _ => doc["assets"][0]["referenceIds"] = json!(vec!["demo-mountain";9]),
+            }
+            let before = doc.clone();
+            assert!(apply_action(&mut doc,&action).is_err(),"{kind}");
+            assert_eq!(doc,before,"{kind}");
+        }
+    }
+    #[test]
+    fn session_input_copy_keeps_use_result_as_reference_distinct() {
+        let mut doc = session_input_copy_document();
+        apply_action(&mut doc,&json!({"type":"create_session","workspaceId":"demo-plush","parentAssetId":"demo-fox-v3"})).unwrap();
+        let session = doc["sessions"].as_array().unwrap().last().unwrap();
+        assert_eq!(session["referenceIds"],json!(["demo-fox-v3"]));
+        assert_eq!(session["parentAssetId"],"demo-fox-v3");
+        assert_eq!(session["draft"],"实际提交的这一轮提示词");
+    }
     fn deletion_store() -> Store {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../output/session-delete-20261105/tests").join(id());
         fs::create_dir_all(&root).unwrap();
