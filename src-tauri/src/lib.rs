@@ -2,6 +2,8 @@ mod network;
 mod provider;
 mod providers;
 mod session_move;
+mod session_delete;
+mod recycle;
 mod storage;
 mod taskbar;
 mod store;
@@ -60,6 +62,16 @@ fn dispatch(app: tauri::AppHandle, store: State<'_, Store>, action: Value) -> Re
         &app,
         store.change(|doc| apply_action(doc, &action))?,
     ))
+}
+#[tauri::command]
+fn preview_session_delete(store: State<'_, Store>, session_id: String) -> Result<session_delete::Preview> {
+    session_delete::preview(&store.read()?, &session_id)
+}
+#[tauri::command]
+fn delete_session(app: tauri::AppHandle, store: State<'_, Store>, session_id: String, reference_ids: Vec<String>, token: String) -> Result<Value> {
+    let result = store.delete_session(&session_id, &reference_ids, &token);
+    if let Ok(document) = store.read() { changed(&app, document); }
+    result
 }
 #[tauri::command]
 fn save_settings(
@@ -378,13 +390,7 @@ async fn generate(
         Ok(output) => {
             let session = find(&initial, "sessions", &request.session_id)?;
             let workspace_id = text(session, "workspaceId").to_string();
-            let group_id = if text(session, "parentAssetId").is_empty() {
-                request.session_id.clone()
-            } else {
-                find(&initial, "assets", text(session, "parentAssetId"))
-                    .map(|a| text(a, "groupId").to_string())
-                    .unwrap_or(request.session_id.clone())
-            };
+            let group_id = request.session_id.clone();
             let name = request.prompt.chars().take(20).collect::<String>();
             let mut assets = Vec::new();
             let mut error = None;
@@ -628,6 +634,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             bootstrap,
             dispatch,
+            preview_session_delete,
+            delete_session,
             save_settings,
             network_settings,
             test_network_settings,

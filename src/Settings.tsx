@@ -14,7 +14,7 @@ const roles: {id:ModelRole;name:string;description:string}[] = [
   {id:'naming',name:'会话命名模型',description:'概括创作内容，自动生成简短的会话名称'},
   {id:'imageMain',name:'图片主模型',description:'通过 Responses 调用绘图工具，与绘图模型使用同一提供商'},
   {id:'image',name:'默认绘图模型',description:'会话默认使用的绘图模型，可在输入区单独切换'},
-  {id:'refine',name:'Prompt 优化模型',description:'按忠实或创意模式改进 Prompt，建议采用后才会用于生成'},
+  {id:'refine',name:'Prompt 优化模型',description:'用于文字整理和 Prompt 优化；优化建议采用后才会用于生成'},
 ];
 const presets:Record<ModelProvider['kind'],{name:string;baseUrl:string;models:ProviderModel[]}>={
   openai:{name:'OpenAI',baseUrl:'https://api.openai.com/v1',models:[textModel('gpt-6.1-sol'),{...textModel('gpt-image-2.5-sunburst'),kind:'image'}]},

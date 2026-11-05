@@ -4,7 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import seed from './data/seed.json';
 import { SettingsWrites } from './settingsWrites';
-import type { Asset, Bootstrap, GenerationRequest, NetworkConfig, NetworkState, RefineResult, Settings, StudioAction, StudioDocument, UsageSummary } from './types';
+import type { Asset, Bootstrap, GenerationRequest, NetworkConfig, NetworkState, RefineResult, SessionDeletePreview, Settings, StudioAction, StudioDocument, UsageSummary } from './types';
 
 export const desktop = isTauri();
 export interface Toast { id: number; message: string; error: boolean }
@@ -71,7 +71,11 @@ export function useStudio() {
     if (!desktop) throw new Error('浏览器中仅提供界面预览，请在 Windows 桌面版使用此功能。');
   }, []);
   const mutate = useCallback(async (action: StudioAction) => {
-    requireDesktop(); const document = await invoke<StudioDocument>('dispatch', { action }); accept(document); return document;
+    requireDesktop();
+    const document = action.type === 'delete_session'
+      ? await invoke<StudioDocument>('delete_session', { sessionId: action.id, referenceIds: action.referenceIds, token: action.token })
+      : await invoke<StudioDocument>('dispatch', { action });
+    accept(document); return document;
   }, [accept, requireDesktop]);
   const registerSessionEditor = useCallback((id:string,execute:(action:StudioAction)=>Promise<StudioDocument>)=>{
     sessionEditors.current.set(id,execute);
@@ -82,6 +86,20 @@ export function useStudio() {
     const editor=sessionEditors.current.values().next().value;
     const document=await(editor?editor(action):mutate(action));
     notify(`会话已移至「${document.workspaces.find(w=>w.id===workspaceId)?.name||'目标工作区'}」`);
+    return document;
+  },[mutate,notify]);
+  const previewDeleteSession = useCallback(async (id:string) => {
+    requireDesktop();
+    const editor = sessionEditors.current.get(id);
+    if (editor) await editor({type:'flush_session'});
+    return invoke<SessionDeletePreview>('preview_session_delete', {sessionId:id});
+  },[requireDesktop]);
+  const deleteSession = useCallback(async (id:string,referenceIds:string[],token:string) => {
+    await settingsWrites.current!.idle();
+    const action = {type:'delete_session',id,referenceIds,token};
+    const editor = sessionEditors.current.get(id);
+    const document = await (editor ? editor(action) : mutate(action));
+    notify('会话已删除，移除内容已送入系统回收站');
     return document;
   },[mutate,notify]);
   const saveSettings = useCallback((settings: Settings, providerKeys: Record<string,string> = {}) => settingsWrites.current!.enqueue(settings, providerKeys), []);
@@ -142,6 +160,6 @@ export function useStudio() {
   const exportUsage = useCallback(async () => { requireDesktop(); const destination=await save({title:'导出用量记录',defaultPath:'image-studio-usage.jsonl',filters:[{name:'JSON Lines',extensions:['jsonl']}]});if(destination){await invoke('export_usage',{destination});notify('用量日志已导出');} },[requireDesktop,notify]);
   const chooseDataDirectory = useCallback(async () => { requireDesktop(); return open({directory:true,multiple:false,title:'选择空的数据目录'}); },[requireDesktop]);
   const relocateData = useCallback(async (destination:string) => { requireDesktop(); await settingsWrites.current!.idle(); await invoke('relocate_data',{destination});notify('正在迁移数据并重启应用…'); },[requireDesktop,notify]);
-  return { ...boot, ready, loadError, toasts, settingsSaving, settingsError, notify, report, refresh, mutate, saveSettings, importImages, importClipboardImages, nameSession, exportImage, generate, refine, imageUrl, listModels, usageRecords, networkSettings, testNetworkSettings, exportUsage, chooseDataDirectory, relocateData, moveSession, registerSessionEditor };
+  return { ...boot, ready, loadError, toasts, settingsSaving, settingsError, notify, report, refresh, mutate, saveSettings, importImages, importClipboardImages, nameSession, exportImage, generate, refine, imageUrl, listModels, usageRecords, networkSettings, testNetworkSettings, exportUsage, chooseDataDirectory, relocateData, moveSession, registerSessionEditor, previewDeleteSession, deleteSession };
 }
 export type Studio = ReturnType<typeof useStudio>;

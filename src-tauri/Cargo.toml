@@ -32,5 +32,8 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 keyring = { version = "3", features = ["windows-native"] }
 rust_decimal = "1"
 
+[target.'cfg(windows)'.dependencies]
+windows = { version = "=0.62.2", features = ["Win32_System_Com", "Win32_UI_Shell"] }
+
 [dev-dependencies]
 tempfile = "3"

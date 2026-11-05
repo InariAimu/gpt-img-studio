@@ -49,4 +49,5 @@ export interface UsageEvent { id: string; sessionId: string; operation: string; 
 export interface UsageSummary { totalModelUsages: number; modelJournalPath: string; totalRequests: number; unpricedRequests: number; knownEstimatedCostUsd: string; journalPath: string; records: UsageEvent[] }
 export interface GenerationRequest { sessionId: string; prompt: string; originalPrompt: string; referenceIds: string[]; size: string; quality: string; contextMode: ContextMode; imageSelection?: ModelSelection }
 export interface RefineResult { prompt: string; model: string }
+export interface SessionDeletePreview { token: string; removableReferences: Asset[]; preservedReferenceCount: number; removedResultCount: number; preservedResultCount: number }
 export interface StudioAction { type: string; [key: string]: unknown }

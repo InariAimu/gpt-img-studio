@@ -81,6 +81,7 @@ impl Store {
         if doc["schemaVersion"] != 1 {
             return Err("此图库的数据版本暂不受支持，请使用更新的应用版本".into());
         }
+        crate::session_delete::recover(&store.root, &doc)?;
         Ok(store)
     }
     pub fn operation(&self) -> Result<OperationGuard<'_>> {
@@ -163,6 +164,32 @@ impl Store {
         self.reserve_relocation()?;
         let _guard = IdleWriteGuard(self);
         self.change_locked(update)
+    }
+    pub fn delete_session(&self, session_id: &str, references: &[String], token: &str) -> Result<Value> {
+        self.delete_session_recycling(session_id, references, token, crate::recycle::directory)
+    }
+    fn delete_session_recycling(&self, session_id: &str, references: &[String], token: &str, recycle: impl FnOnce(&Path) -> Result<()>) -> Result<Value> {
+        self.reserve_relocation()?;
+        let _guard = IdleWriteGuard(self);
+        let connection = self.connection.lock().map_err(|_| "图库正在恢复，请重启应用")?;
+        let saved: String = connection.query_row("SELECT document FROM studio_state WHERE id=1", [], |row| row.get(0)).map_err(|e|e.to_string())?;
+        let mut before: Value = serde_json::from_str(&saved).map_err(|e|e.to_string())?;
+        let mut after = before.clone();
+        crate::session_delete::apply(&mut after, session_id, references, token)?;
+        after["revision"] = json!(before["revision"].as_u64().unwrap_or(0) + 1);
+        let serialized = serde_json::to_string(&after).map_err(|e|e.to_string())?;
+        let archive = crate::session_delete::Archive::stage(&self.root, &before, &after, session_id)?;
+        if let Err(error) = connection.execute("UPDATE studio_state SET document=?1 WHERE id=1", params![serialized]) {
+            archive.restore()?;
+            return Err(format!("会话删除未保存，图片已恢复：{error}；恢复材料：{}", archive.path.display()));
+        }
+        if let Err(error) = recycle(&archive.path) {
+            archive.restore()?;
+            before["revision"] = json!(after["revision"].as_u64().unwrap_or(0) + 1);
+            connection.execute("UPDATE studio_state SET document=?1 WHERE id=1", params![before.to_string()]).map_err(|e| format!("恢复记录失败：{e}；恢复材料：{}", archive.path.display()))?;
+            return Err(format!("无法移入回收站，删除已取消并恢复：{error}；恢复材料：{}", archive.path.display()));
+        }
+        Ok(after)
     }
     fn change_locked(&self, update: impl FnOnce(&mut Value) -> Result<()>) -> Result<Value> {
         let connection = self
@@ -555,6 +582,98 @@ pub fn apply_action(doc: &mut Value, action: &Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn deletion_store() -> Store {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../output/session-delete-20261105/tests").join(id());
+        fs::create_dir_all(&root).unwrap();
+        let store = Store::open(root).unwrap();
+        store.change(|doc| { *doc = crate::session_delete::tests::document(); Ok(()) }).unwrap();
+        for path in ["assets/output.png","thumbnails/output.webp","assets/private.png","thumbnails/private.webp"] {
+            fs::write(store.root.join(path), path.as_bytes()).unwrap();
+        }
+        store
+    }
+    #[test]
+    fn session_delete_recycle_failure_restores_records_and_original_files() {
+        let store = deletion_store();
+        let before = store.read().unwrap();
+        let token = crate::session_delete::preview(&before,"deleting").unwrap().token;
+        let error = store.delete_session_recycling("deleting", &["private".into()], &token, |_| Err("simulated unavailable recycle bin".into())).unwrap_err();
+        assert!(error.contains("删除已取消并恢复"));
+        let mut restored = store.read().unwrap();
+        restored["revision"] = before["revision"].clone();
+        assert_eq!(restored,before);
+        assert_eq!(fs::read(store.root.join("assets/output.png")).unwrap(),b"assets/output.png");
+        assert_eq!(fs::read(store.root.join("assets/private.png")).unwrap(),b"assets/private.png");
+    }
+    #[cfg(windows)]
+    #[test]
+    fn session_delete_recycles_only_unshared_files_and_keeps_a_recovery_manifest() {
+        let store = deletion_store();
+        store.change(|doc| {
+            list_mut(doc,"assets")?.push(json!({"id":"same-bytes","sessionId":"other","path":"assets/output.png","thumbnailPath":"thumbnails/output.webp","referenceIds":[]}));
+            Ok(())
+        }).unwrap();
+        let token = crate::session_delete::preview(&store.read().unwrap(),"deleting").unwrap().token;
+        let after = store.delete_session_recycling("deleting", &["private".into()], &token, |path| {
+            let manifest: Value = serde_json::from_slice(&fs::read(path.join("session.json")).unwrap()).unwrap();
+            assert_eq!(manifest["session"]["id"],"deleting");
+            assert!(path.join("assets/private.png").exists());
+            assert!(!path.join("assets/output.png").exists());
+            crate::recycle::directory(path)?;
+            println!("RECYCLED_SESSION_ARCHIVE={}",path.display());
+            Ok(())
+        }).unwrap();
+        assert!(find(&after,"sessions","deleting").is_err());
+        assert!(find(&after,"assets","private").is_err());
+        assert!(store.root.join("assets/output.png").exists());
+        assert!(!store.root.join("assets/private.png").exists());
+    }
+    #[test]
+    fn session_delete_rejects_unsafe_paths_before_changing_records_or_files() {
+        let store = deletion_store();
+        store.change(|doc| { doc["assets"][5]["path"] = json!("../outside.png"); Ok(()) }).unwrap();
+        let before = store.read().unwrap();
+        let token = crate::session_delete::preview(&before,"deleting").unwrap().token;
+        assert!(store.delete_session("deleting",&[],&token).is_err());
+        assert_eq!(store.read().unwrap(),before);
+        assert!(store.root.join("assets/output.png").exists());
+    }
+    #[cfg(windows)]
+    #[test]
+    fn session_delete_interrupted_before_commit_restores_files_on_reopen() {
+        let store = deletion_store();
+        let before = store.read().unwrap();
+        let token = crate::session_delete::preview(&before,"deleting").unwrap().token;
+        let mut after = before.clone();
+        crate::session_delete::apply(&mut after,"deleting",&["private".into()],&token).unwrap();
+        let archive = crate::session_delete::Archive::stage(&store.root,&before,&after,"deleting").unwrap();
+        let archive_path = archive.path.clone();
+        let root = store.root.clone();
+        assert!(!root.join("assets/private.png").exists());
+        drop(store);
+        let reopened = Store::open(root).unwrap();
+        assert_eq!(reopened.read().unwrap(),before);
+        assert_eq!(fs::read(reopened.root.join("assets/private.png")).unwrap(),b"assets/private.png");
+        assert!(!archive_path.exists());
+    }
+    #[cfg(windows)]
+    #[test]
+    fn session_delete_interrupted_after_commit_finishes_recycling_on_reopen() {
+        let store = deletion_store();
+        let before = store.read().unwrap();
+        let token = crate::session_delete::preview(&before,"deleting").unwrap().token;
+        let mut after = before.clone();
+        crate::session_delete::apply(&mut after,"deleting",&["private".into()],&token).unwrap();
+        let archive = crate::session_delete::Archive::stage(&store.root,&before,&after,"deleting").unwrap();
+        let archive_path = archive.path.clone();
+        store.change(|doc|{*doc=after;Ok(())}).unwrap();
+        let root = store.root.clone();
+        drop(store);
+        let reopened=Store::open(root).unwrap();
+        assert!(find(&reopened.read().unwrap(),"sessions","deleting").is_err());
+        assert!(!reopened.root.join("assets/private.png").exists());
+        assert!(!archive_path.exists());
+    }
     #[test]
     fn workspace_rename_persists_and_preserves_all_relationships(){
         let dir=tempfile::tempdir().unwrap();let store=Store::open(dir.path().into()).unwrap();let before=store.read().unwrap();

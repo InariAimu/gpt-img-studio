@@ -8,7 +8,7 @@
 - 同目录 `usage/usage.jsonl` 是可采集镜像，UTF-8，一行一个完整事件。启动时从 SQLite 重建，修复中断写入。设置页支持导出完整 JSONL。
 - 数据目录可配置；采集器应使用设置页显示的实际日志路径，不能固定假设位于 AppData。
 - 镜像可能被整体替换，不能只依赖文件偏移量；以 `(deviceId, id)` 去重。末尾不完整行应延后读取。
-- 请求种类：`image`、`refine`、`naming`。模型列表查询不计为计费调用。
+- 请求种类：`image`、`refine`、`structure`、`naming`。其中 `structure` 为纯文字 Prompt 整理。模型列表查询不计为计费调用。
 - 不包含 Prompt、图片数据、原始请求体、API Key 或本地素材路径。
 - 升级前未保存 usage 的历史调用不补造 token 或费用。
 

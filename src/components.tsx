@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Check, ChevronDown, Copy, Download, GitBranch, Heart, Image as ImageIcon, Layers, Maximize2, Pencil, WandSparkles, X } from 'lucide-react';
 import { AutoSaveInput } from './AutoSaveInput';
+import { assetStackKey } from './assetStacks';
 import type { Asset, PromptLayer } from './types';
 import type { Studio } from './useStudio';
 
@@ -14,14 +15,14 @@ export function Modal({ title, children, onClose, className = '' }: { title: str
 export function Empty({ icon, title, description, children }: { icon?: ReactNode; title: string; description: string; children?: ReactNode }) {
   return <div className="empty"><div className="empty-icon">{icon || <ImageIcon />}</div><h3>{title}</h3><p>{description}</p>{children}</div>;
 }
-export function AssetCard({ asset, studio, active, versions = 1, onSelect, onOpen }: { asset: Asset; studio: Studio; active?: boolean; versions?: number; onSelect: () => void; onOpen: () => void }) {
+export function AssetCard({ asset, studio, title = asset.title, showSubtitle = true, active, versions = 1, onSelect, onOpen }: { asset: Asset; studio: Studio; title?: string; showSubtitle?: boolean; active?: boolean; versions?: number; onSelect: () => void; onOpen?: () => void }) {
   const workspace = studio.document.workspaces.find(w => w.id === asset.workspaceId);
   return <article className={`asset-card ${active ? 'selected' : ''}`}>
-    <button className="asset-main" onClick={onSelect} onDoubleClick={onOpen} aria-label={`查看 ${asset.title}`} aria-pressed={active}>
-      <span className="asset-frame"><img src={studio.imageUrl(asset, true)} alt={asset.title} loading="lazy" draggable={false} />
+    <button className="asset-main" onClick={onSelect} onDoubleClick={onOpen} aria-label={`查看 ${title}`} aria-pressed={active}>
+      <span className="asset-frame"><img src={studio.imageUrl(asset, true)} alt={title} loading="lazy" draggable={false} />
         {asset.demo && <span className="sample-badge">示例</span>}{versions > 1 && <span className="version-badge"><Layers size={12} />{versions} 个版本</span>}
-      </span><span className="asset-title">{asset.title}</span><span className="asset-subtitle">{workspace?.name || '本地导入'}<span>·</span>{asset.width} × {asset.height}</span>
-    </button><button className={`favorite-button ${asset.favorite ? 'is-favorite' : ''}`} aria-label={asset.favorite ? `取消收藏 ${asset.title}` : `收藏 ${asset.title}`} onClick={() => void studio.mutate({ type: 'favorite', id: asset.id }).catch(studio.report)}><Heart size={14} fill={asset.favorite ? 'currentColor' : 'none'} /></button>
+      </span><span className="asset-title" title={title}>{title}</span>{showSubtitle&&<span className="asset-subtitle">{workspace?.name || '本地导入'}<span>·</span>{asset.width} × {asset.height}</span>}
+    </button><button className={`favorite-button ${asset.favorite ? 'is-favorite' : ''}`} aria-label={asset.favorite ? `取消收藏 ${title}` : `收藏 ${title}`} onClick={() => void studio.mutate({ type: 'favorite', id: asset.id }).catch(studio.report)}><Heart size={14} fill={asset.favorite ? 'currentColor' : 'none'} /></button>
   </article>;
 }
 export function PromptDetails({ asset, studio, compact = false }: { asset: Asset; studio: Studio; compact?: boolean }) {
@@ -39,7 +40,7 @@ export function PromptDetails({ asset, studio, compact = false }: { asset: Asset
   </div>;
 }
 export function AssetInspector({ asset, studio, onClose, onOpen, onBranch, onPreset, onSession, onSelect }: { asset: Asset; studio: Studio; onClose: () => void; onOpen: () => void; onBranch: () => void; onPreset: () => void; onSession: () => void; onSelect: (id: string) => void }) {
-  const versions = studio.document.assets.filter(a => a.groupId === asset.groupId).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const versions = studio.document.assets.filter(a => assetStackKey(a) === assetStackKey(asset)).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   const workspace = studio.document.workspaces.find(w => w.id === asset.workspaceId);
   const session = studio.document.sessions.find(s => s.id === asset.sessionId);
   return <aside className="inspector" aria-label="图片详情"><div className="inspector-heading"><span>作品详情</span><button className="icon-button" aria-label="关闭详情" onClick={onClose}><X /></button></div>
