@@ -5,6 +5,6 @@ export interface SyncView {
   pending:number;
   config:SyncConfig;
   hasToken:boolean;
-  status:{running:boolean;lastSuccess:string|null;error:string|null;uploaded:number;downloaded:number};
+  status:{running:boolean;pausedForGallery?:boolean;lastSuccess:string|null;error:string|null;uploaded:number;downloaded:number};
   conflicts:SyncConflict[];
 }

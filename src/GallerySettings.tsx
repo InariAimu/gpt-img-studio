@@ -2,17 +2,18 @@ import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Images, LoaderCircle, Save, ShieldCheck, Tags } from 'lucide-react';
 import { OptionSelect } from './OptionSelect';
+import type { ModelSelection } from './types';
 import { desktop, type Studio } from './useStudio';
 
 interface GalleryConfig {
   apiUrl: string; username: string; direct: boolean;
   uploadMode: 'manual' | 'afterGeneration'; safety: 'safe' | 'sketchy' | 'unsafe';
-  defaultTags: string[]; includePrompt: boolean; includeGeneration: boolean;
+  defaultTags: string[]; includePrompt: boolean; includeGeneration: boolean; labelModel: ModelSelection|null;
 }
 interface GalleryState { config: GalleryConfig; hasToken: boolean }
 const defaults: GalleryConfig = {
   apiUrl: '', username: '', direct: true, uploadMode: 'manual', safety: 'sketchy',
-  defaultTags: [], includePrompt: true, includeGeneration: true,
+  defaultTags: [], includePrompt: true, includeGeneration: true, labelModel:null,
 };
 const splitTags = (value: string) => [...new Set(value.split(/[\s,，]+/u).filter(Boolean))];
 
@@ -41,7 +42,8 @@ export default function GallerySettings({ studio }: { studio: Studio }) {
   const disabled = loading || !!busy || (desktop && !saved);
   const sameAccount = !!saved && config.apiUrl.trim().replace(/\/+$/, '') === saved.config.apiUrl && config.username.trim() === saved.config.username;
   const hasToken = sameAccount && saved.hasToken;
-  const current = { ...config, defaultTags: splitTags(tags) };
+  const current = { ...config, uploadMode:'manual' as const, defaultTags: splitTags(tags).filter(t=>t!=='ai_generated') };
+  const models=(studio.document.settings.providers||[]).flatMap(p=>p.models.filter(m=>m.kind==='text'&&m.vision).map(m=>({key:JSON.stringify({providerId:p.id,modelId:m.id}),label:`${p.name} · ${m.name||m.id}`})));
   const dirty = !!token || forgetToken || JSON.stringify(current) !== JSON.stringify(saved?.config ?? defaults);
   function update(patch: Partial<GalleryConfig>) {
     setConfig(previous => ({ ...previous, ...patch })); setResult(undefined);
@@ -55,7 +57,7 @@ export default function GallerySettings({ studio }: { studio: Studio }) {
           ? await invoke<GalleryState>('save_gallery_settings', { config: current, token: token.trim() || null, forgetToken })
           : { config: current, hasToken: false };
         setSaved(next); setConfig(next.config); setTags(next.config.defaultTags.join(' ')); setToken(''); setForgetToken(false);
-        studio.notify(desktop ? '图库配置已保存；尚未启用上传' : '图库配置已更新，仅用于本次界面预览');
+        studio.notify(desktop ? '图库配置已保存' : '图库配置已更新，仅用于本次界面预览');
       } else {
         const test = await invoke<{ authenticated: boolean; rank: string | null; elapsedMs: number }>('test_gallery_settings', { config: current, token: token.trim() || null });
         setResult({ error: false, message: test.authenticated
@@ -67,7 +69,7 @@ export default function GallerySettings({ studio }: { studio: Studio }) {
   }
   return <section className="settings-section gallery-settings" aria-labelledby="gallery-settings-title">
     <div className="settings-section-heading"><Images /><div><h2 id="gallery-settings-title">szurubooru 图库</h2><p>将展示图库与 Studio 的本地创作记录分开管理。</p></div></div>
-    <p className="gallery-config-notice">当前仅保存配置，不会上传图片；选择自动上传也不会立即启用。</p>
+    <p className="gallery-config-notice">手动选择生成结果，或在工作区多选后导入。任务在后台逐张执行，不会自动上传新生成的图片。</p>
     {loading && <p role="status" className="field-help">正在读取图库配置…</p>}
     {loadError && <div role="alert" className="network-result error">读取失败：{loadError}<button className="button ghost small" onClick={() => setRefresh(n => n + 1)}>重新读取</button></div>}
     <fieldset disabled={disabled} className="gallery-fields">
@@ -82,14 +84,11 @@ export default function GallerySettings({ studio }: { studio: Studio }) {
       <label className="checkbox-label"><input type="checkbox" checked={config.direct} onChange={e => update({ direct: e.target.checked })} />直连图库（关闭后使用应用的网络设置）</label>
       <div className="gallery-preferences">
         <h3>上传偏好</h3>
-        <div className="form-columns">
-          <label className="field"><span className="field-label">上传时机（预设）</span><OptionSelect aria-label="图库上传时机" disabled={disabled} value={config.uploadMode} onValueChange={v => update({ uploadMode: v as GalleryConfig['uploadMode'] })}><option value="manual">手动选择图片</option><option value="afterGeneration">生成完成后自动上传</option></OptionSelect></label>
-          <label className="field"><span className="field-label">默认内容分级</span><OptionSelect aria-label="图库默认内容分级" disabled={disabled} value={config.safety} onValueChange={v => update({ safety: v as GalleryConfig['safety'] })}><option value="sketchy">可能敏感 · Sketchy</option><option value="safe">安全 · Safe</option><option value="unsafe">敏感 · Unsafe</option></OptionSelect></label>
-        </div>
-        <p className="field-help">上传偏好供后续接入使用；默认发送原图，保留本机文件。</p>
+        <label className="field"><span className="field-label">标签模型</span><OptionSelect aria-label="图库标签模型" disabled={disabled} value={config.labelModel?JSON.stringify({providerId:config.labelModel.providerId,modelId:config.labelModel.modelId}):'default'} onValueChange={v=>update({labelModel:v==='default'?null:JSON.parse(v)})}><option value="default">跟随 Prompt 优化模型（须支持视觉）</option>{models.map(m=><option key={m.key} value={m.key}>{m.label}</option>)}</OptionSelect></label>
+        <p className="field-help">同一次读图返回标签、中文描述和 Safe / Sketchy / Unsafe 分级。以实际画面为准；识别失败会暂停该图片，重试不会重复已完成的打标。</p>
         <h3><Tags size={15} />标签与附带信息</h3>
-        <label className="field"><span className="field-label">默认标签</span><input aria-label="图库默认标签" value={tags} spellCheck={false} placeholder="例如：ai_generated studio" onChange={e => { setTags(e.target.value); setResult(undefined); }} /></label>
-        <p className="field-help">用空格或逗号分隔，标签内使用下划线；重复标签会合并。暂不自动读图生成标签。</p>
+        <label className="field"><span className="field-label">默认标签</span><input aria-label="图库默认标签" value={tags} spellCheck={false} placeholder="例如：character_design landscape" onChange={e => { setTags(e.target.value); setResult(undefined); }} /></label>
+        <p className="field-help">用空格或逗号分隔，标签内使用下划线；重复标签会合并。将与模型标签合并；不添加 ai_generated。</p>
         <label className="checkbox-label"><input type="checkbox" checked={config.includePrompt} onChange={e => update({ includePrompt: e.target.checked })} />附带 Prompt（作为帖子评论）</label>
         <label className="checkbox-label"><input type="checkbox" checked={config.includeGeneration} onChange={e => update({ includeGeneration: e.target.checked })} />附带模型、尺寸和质量参数</label>
       </div>

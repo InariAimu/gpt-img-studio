@@ -3,7 +3,7 @@ import { Copy, Download, LoaderCircle, RefreshCw } from 'lucide-react';
 import type { Studio } from './useStudio';
 import type { UsageSummary } from './types';
 
-const operationName: Record<string,string> = { image:'图像生成',refine:'Prompt 优化',structure:'Prompt 整理',naming:'会话命名' };
+const operationName: Record<string,string> = { image:'图像生成',refine:'Prompt 优化',structure:'Prompt 整理',naming:'会话命名',gallery_label:'图库标签' };
 const tokens = (value:number|null) => value===null?'未知':value.toLocaleString();
 export default function UsageSettings({studio}:{studio:Studio}) {
   const [data,setData]=useState<UsageSummary|null>(null),[loading,setLoading]=useState(false);

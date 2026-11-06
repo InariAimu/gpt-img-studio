@@ -32,6 +32,7 @@ impl Config {
 #[serde(rename_all = "camelCase")]
 pub struct Status {
     pub running: bool,
+    pub paused_for_gallery: bool,
     pub last_success: Option<String>,
     pub error: Option<String>,
     pub uploaded: usize,
@@ -130,6 +131,7 @@ pub fn view(store: &Store, runtime: &Runtime) -> Result<Value> {
     let (config, state) = store.sync_saved()?;
     let mut status = runtime.status.lock().map_err(|e| e.to_string())?.clone();
     status.running = runtime.busy.load(Ordering::Acquire);
+    status.paused_for_gallery = crate::gallery_import::has_pending(store)?;
     Ok(
         json!({"hasToken":!config.url.is_empty()&&provider::has_key(&config.credential_kind(),&config.url),"pending":studio_sync::mutations(&studio_sync::project(&store.read()?),&state).len(),"config":config,"status":status,"conflicts":state.conflicts.values().collect::<Vec<_>>() }),
     )
@@ -230,6 +232,7 @@ pub fn resolve(store: &Store, runtime: &Runtime, key: String, use_local: bool) -
     tx.commit().map_err(|e| e.to_string())?;
     Ok(doc)
 }
+pub fn is_running(runtime: &Runtime) -> bool { runtime.busy.load(Ordering::Acquire) }
 pub async fn run(app: &tauri::AppHandle) -> Result<Value> {
     let runtime = app.state::<Runtime>();
     let store = app.state::<Store>();
@@ -241,6 +244,12 @@ pub async fn run(app: &tauri::AppHandle) -> Result<Value> {
         return view(&store, &runtime);
     }
     let guard = Guard(&runtime);
+    if crate::gallery_import::has_pending(&store)? {
+        drop(guard);
+        let value=view(&store,&runtime)?;
+        let _=app.emit("studio:sync",&value);
+        return Ok(value);
+    }
     if let Ok(value) = view(&store, &runtime) {
         let _ = app.emit("studio:sync", value);
     }

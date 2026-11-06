@@ -71,6 +71,26 @@ fn is_referenced(doc: &Value, asset_id: &str) -> bool {
         })
 }
 
+pub fn apply_many(doc: &mut Value, selected: &[String], source_id: &str, target_id: &str) -> Result<()> {
+    find(doc, "workspaces", source_id)?;
+    find(doc, "workspaces", target_id)?;
+    if selected.is_empty() || source_id == target_id {
+        return Err("请选择会话及另一个目标工作区".into());
+    }
+    let selected: std::collections::BTreeSet<_> = selected.iter().collect();
+    for session_id in &selected {
+        if text(find(doc, "sessions", session_id)?, "workspaceId") != source_id {
+            return Err("所选会话已移出当前工作区，请重新选择".into());
+        }
+    }
+    let mut staged = doc.clone();
+    for session_id in selected {
+        apply(&mut staged, session_id, target_id)?;
+    }
+    *doc = staged;
+    Ok(())
+}
+
 pub fn apply(doc: &mut Value, session_id: &str, target_id: &str) -> Result<()> {
     let session = find(doc, "sessions", session_id)?.clone();
     find(doc, "workspaces", target_id)?;
@@ -230,6 +250,41 @@ pub fn apply(doc: &mut Value, session_id: &str, target_id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn batch_move_preserves_versions_shared_references_and_history() {
+        let mut doc=fixture();
+        let before=doc.clone();
+        apply_many(&mut doc,&["moving".into(),"staying".into(),"moving".into()],"a","b").unwrap();
+        for id in ["moving","staying"] { assert_eq!(find(&doc,"sessions",id).unwrap()["workspaceId"],"b"); }
+        for id in ["output","edit","other-output"] {
+            let result=find(&doc,"assets",id).unwrap();
+            assert_eq!(result["workspaceId"],"b");
+            assert_eq!(result["path"],find(&before,"assets",id).unwrap()["path"]);
+        }
+        assert_eq!(find(&doc,"sessions","moving").unwrap()["draft"],"unsent");
+        assert_eq!(find(&doc,"sessions","moving").unwrap()["lastResponseId"],"resp-last");
+        for collection in ["sessions","assets","jobs"] {
+            for record in doc[collection].as_array().unwrap() {
+                for id in reference_ids(record) { assert!(find(&doc,"assets",&id).is_ok(),"{collection}: {id}"); }
+            }
+        }
+        apply_many(&mut doc,&["moving".into(),"staying".into()],"b","a").unwrap();
+        for id in ["output","edit","other-output"] { assert_eq!(find(&doc,"assets",id).unwrap()["workspaceId"],"a"); }
+    }
+    #[test]
+    fn batch_move_rejects_invalid_scope_and_late_failure_without_partial_changes() {
+        let original=fixture();
+        for (ids,source,target) in [(vec![],"a","b"),(vec!["moving".into()],"b","a"),(vec!["missing".into()],"a","b"),(vec!["moving".into()],"a","a")] {
+            let mut doc=original.clone();
+            assert!(apply_many(&mut doc,&ids,source,target).is_err());
+            assert_eq!(doc,original);
+        }
+        let mut doc=original;
+        doc["sessions"][1]["referenceIds"].as_array_mut().unwrap().push(json!("missing-reference"));
+        let before=doc.clone();
+        assert!(apply_many(&mut doc,&["moving".into(),"staying".into()],"a","b").is_err());
+        assert_eq!(doc,before);
+    }
     fn fixture() -> Value {
         json!({"schemaVersion":1,"revision":0,"workspaces":[{"id":"a"},{"id":"b"}],"sessions":[{"id":"moving","workspaceId":"a","draft":"unsent","referenceIds":["shared","private","other-output"],"parentAssetId":"other-output","lastResponseId":"resp-last"},{"id":"staying","workspaceId":"a","referenceIds":["shared","output"]},{"id":"destination","workspaceId":"b","referenceIds":["output"]}],"assets":[{"id":"shared","workspaceId":"a","sessionId":"","referenceIds":[],"path":"assets/shared.png","thumbnailPath":"thumbnails/shared.webp"},{"id":"private","workspaceId":"a","sessionId":"","referenceIds":[],"path":"assets/private.png"},{"id":"output","workspaceId":"a","sessionId":"moving","referenceIds":["shared","private"],"responseId":"resp-first","path":"assets/output.png"},{"id":"edit","workspaceId":"a","sessionId":"moving","referenceIds":["output","shared"],"responseId":"resp-last","previousResponseId":"resp-first","path":"assets/edit.png"},{"id":"other-output","workspaceId":"a","sessionId":"staying","referenceIds":["output"],"path":"assets/other.png"}],"jobs":[{"id":"failed","sessionId":"moving","status":"failed","referenceIds":["shared"]},{"id":"other-failed","sessionId":"staying","status":"failed","referenceIds":["output"]}],"presets":[]})
     }

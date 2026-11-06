@@ -1,4 +1,4 @@
-//! Local gallery preferences. This module deliberately has no upload operation.
+//! Local gallery preferences and authenticated szurubooru connection helpers.
 use crate::{
     network, provider,
     store::{Result, Store},
@@ -41,6 +41,7 @@ pub struct Config {
     pub default_tags: Vec<String>,
     pub include_prompt: bool,
     pub include_generation: bool,
+    pub label_model: Option<Value>,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -53,6 +54,7 @@ impl Default for Config {
             default_tags: vec![],
             include_prompt: true,
             include_generation: true,
+            label_model: None,
         }
     }
 }
@@ -99,15 +101,15 @@ impl Config {
         self.default_tags = tags;
         Ok(())
     }
-    fn credential_kind(&self) -> String {
+    pub(crate) fn credential_kind(&self) -> String {
         format!("szurubooru:{}", self.username)
     }
-    fn has_token(&self) -> bool {
+    pub(crate) fn has_token(&self) -> bool {
         !self.api_url.is_empty()
             && !self.username.is_empty()
             && provider::has_key(&self.credential_kind(), &self.api_url)
     }
-    fn endpoint(&self, segments: &[&str]) -> Result<Url> {
+    pub(crate) fn endpoint(&self, segments: &[&str]) -> Result<Url> {
         let mut url =
             Url::parse(&format!("{}/", self.api_url)).map_err(|_| "请填写图库 API 地址")?;
         url.path_segments_mut()
@@ -118,7 +120,7 @@ impl Config {
     }
 }
 
-fn read_config(db: &Connection) -> Result<Config> {
+pub(crate) fn read_config(db: &Connection) -> Result<Config> {
     db.execute_batch("CREATE TABLE IF NOT EXISTS gallery_local (id INTEGER PRIMARY KEY CHECK(id=1), config TEXT NOT NULL)").map_err(|e| e.to_string())?;
     let raw: Option<String> = db
         .query_row("SELECT config FROM gallery_local WHERE id=1", [], |r| {
@@ -179,7 +181,7 @@ fn validate_token(token: &str) -> Result<()> {
         Ok(())
     }
 }
-async fn read_json(response: reqwest::Response) -> Result<Value> {
+pub(crate) async fn read_json(response: reqwest::Response) -> Result<Value> {
     let status = response.status();
     if !status.is_success() {
         return Err(match status.as_u16() {

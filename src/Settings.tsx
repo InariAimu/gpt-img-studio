@@ -48,7 +48,7 @@ export default function Settings({ studio, tab, setTab }: { studio: Studio; tab:
   async function moveData(){setRelocating(true);try{await studio.relocateData(dataDirectory);}catch(error){setRelocating(false);studio.report(error);}}
   function options(role:ModelRole){return draft.providers.map(p=>{const models=p.models.filter(m=>m.kind===(role==='image'?'image':'text')&&(role!=='imageMain'||draft.generation.apiMode!=='responses'||(m.protocol==='responses'&&p.id===draft.modelAssignments.image.providerId)));return models.length?<optgroup key={p.id} label={p.name}>{models.map(m=><option key={m.id} value={JSON.stringify([p.id,m.id])}>{m.name||m.id} · {p.name}</option>)}</optgroup>:null;});}
   return <>
-    <header className="page-header"><div><div className="page-eyebrow">按你的习惯创作</div><h1>设置</h1></div></header>
+    <header className="page-header"><div><h1>设置</h1></div></header>
     <div className="settings-layout">
       <nav className="settings-nav" aria-label="设置分类">{([['general','通用',Sparkles],['providers','模型提供商',Server],['network','网络',Globe],['gallery','图库',Images],['sync','多设备同步',RefreshCw],['usage','用量统计',ChartNoAxesCombined],['storage','数据与存储',HardDrive],['about','关于',Info]] as const).map(([id,label,Icon])=><button key={id} className={tab===id?'active':''} aria-current={tab===id?'page':undefined} onClick={()=>setTab(id)}><Icon/>{label}</button>)}</nav>
     <div className="settings-scroll"><div className={`settings-content ${tab==='providers'?'provider-settings-content':tab==='about'?'about-settings-content':''}`}>

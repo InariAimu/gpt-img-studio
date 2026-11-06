@@ -349,6 +349,17 @@ pub fn apply(doc: &mut Value, entities: &Entities) {
                 items.push(item.clone());
             }
         }
+        if collection == "workspaces" && items.iter().any(|w| w["sortOrder"].as_u64().is_some()) {
+            // Legacy documents keep their order until the user explicitly sorts. Unranked
+            // workspaces (including new ones from older clients) follow the ordered list.
+            // Ties must converge even when the two devices started with different arrays.
+            items.sort_by(|a, b| {
+                a["sortOrder"].as_u64().unwrap_or(u64::MAX)
+                    .cmp(&b["sortOrder"].as_u64().unwrap_or(u64::MAX))
+                    .then_with(|| a["createdAt"].as_str().unwrap_or("").cmp(b["createdAt"].as_str().unwrap_or("")))
+                    .then_with(|| a["id"].as_str().unwrap_or("").cmp(b["id"].as_str().unwrap_or("")))
+            });
+        }
         if collection == "providers" {
             if !items.is_empty() || doc["settings"].get(collection).is_some() {
                 doc["settings"][collection] = json!(items);

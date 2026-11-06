@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Check, ChevronDown, Copy, Download, GitBranch, Heart, Image as ImageIcon, Layers, Maximize2, Pencil, WandSparkles, X } from 'lucide-react';
+import GalleryImportButton from './GalleryImportButton';
 import { AutoSaveInput } from './AutoSaveInput';
 import { assetStackKey } from './assetStacks';
 import type { Asset, PromptLayer } from './types';
@@ -15,14 +16,14 @@ export function Modal({ title, children, onClose, className = '' }: { title: str
 export function Empty({ icon, title, description, children }: { icon?: ReactNode; title: string; description: string; children?: ReactNode }) {
   return <div className="empty"><div className="empty-icon">{icon || <ImageIcon />}</div><h3>{title}</h3><p>{description}</p>{children}</div>;
 }
-export function AssetCard({ asset, studio, title = asset.title, showSubtitle = true, active, versions = 1, onSelect, onOpen }: { asset: Asset; studio: Studio; title?: string; showSubtitle?: boolean; active?: boolean; versions?: number; onSelect: () => void; onOpen?: () => void }) {
+export function AssetCard({ asset, studio, title = asset.title, showSubtitle = true, active, selecting = false, wall = false, versions = 1, onSelect, onOpen }: { asset: Asset; studio: Studio; title?: string; showSubtitle?: boolean; active?: boolean; selecting?: boolean; wall?: boolean; versions?: number; onSelect: () => void; onOpen?: () => void }) {
   const workspace = studio.document.workspaces.find(w => w.id === asset.workspaceId);
-  return <article className={`asset-card ${active ? 'selected' : ''}`}>
-    <button className="asset-main" onClick={onSelect} onDoubleClick={onOpen} aria-label={`查看 ${title}`} aria-pressed={active}>
+  return <article className={`asset-card ${active ? 'selected' : ''} ${asset.favorite?'has-favorite':''}`}>
+    <button className="asset-main" onClick={onSelect} onDoubleClick={selecting?undefined:onOpen} aria-label={`${selecting?'选择会话':'查看'} ${title}`} aria-pressed={active}>
       <span className="asset-frame"><img src={studio.imageUrl(asset, true)} alt={title} loading="lazy" draggable={false} />
-        {asset.demo && <span className="sample-badge">示例</span>}{versions > 1 && <span className="version-badge"><Layers size={12} />{versions} 个版本</span>}
+        {selecting&&<span className={`asset-selection-check ${active?'checked':''}`} aria-hidden="true">{active&&<Check size={14}/>}</span>}{asset.demo && <span className="sample-badge">示例</span>}{versions > 1 && <span className="version-badge" title={`${versions} 个版本`}><Layers size={12} />{versions}{!wall&&' 个版本'}</span>}{wall&&selecting&&asset.favorite&&<span className="wall-favorite-marker" aria-label="已收藏"><Heart size={14} fill="currentColor"/></span>}
       </span><span className="asset-title" title={title}>{title}</span>{showSubtitle&&<span className="asset-subtitle">{workspace?.name || '本地导入'}<span>·</span>{asset.width} × {asset.height}</span>}
-    </button><button className={`favorite-button ${asset.favorite ? 'is-favorite' : ''}`} aria-label={asset.favorite ? `取消收藏 ${title}` : `收藏 ${title}`} onClick={() => void studio.mutate({ type: 'favorite', id: asset.id }).catch(studio.report)}><Heart size={14} fill={asset.favorite ? 'currentColor' : 'none'} /></button>
+    </button>{!selecting&&<button className={`favorite-button ${asset.favorite ? 'is-favorite' : ''}`} aria-label={asset.favorite ? `取消收藏 ${title}` : `收藏 ${title}`} onClick={() => void studio.mutate({ type: 'favorite', id: asset.id }).catch(studio.report)}><Heart size={14} fill={asset.favorite ? 'currentColor' : 'none'} /></button>}
   </article>;
 }
 export function PromptDetails({ asset, studio, compact = false }: { asset: Asset; studio: Studio; compact?: boolean }) {
@@ -49,7 +50,7 @@ export function AssetInspector({ asset, studio, onClose, onOpen, onBranch, onCop
     <button className="breadcrumb-link" disabled={!session} onClick={onSession}>{workspace?.name || '本地图库'}{session && <> / {session.title}</>}</button>
     <dl className="properties"><dt>模型</dt><dd>{asset.model}</dd><dt>原图尺寸</dt><dd>{asset.width} × {asset.height}</dd><dt>质量</dt><dd>{qualityLabel(asset.quality)}</dd><dt>保存状态</dt><dd><span className="status-dot" />{asset.demo ? '内置示例插画' : '原图已保存到本地'}</dd></dl>
     <PromptDetails key={asset.id} asset={asset} studio={studio} />
-    <div className="inspector-actions"><button className="button secondary" onClick={onBranch} title="将此图作为参考图，带入本轮提示词并新建会话"><GitBranch />以此图新建</button><button className="button secondary" onClick={onCopyInputs} disabled={!asset.submittedPrompt.trim()&&!asset.originalPrompt.trim()} title="复制本轮提示词、原参考图和生成参数到新会话，不会立即生成"><Copy/>复制输入新建</button></div>
+    <GalleryImportButton asset={asset} studio={studio}/><div className="inspector-actions"><button className="button secondary" onClick={onBranch} title="将此图作为参考图，带入本轮提示词并新建会话"><GitBranch />以此图新建</button><button className="button secondary" onClick={onCopyInputs} disabled={!asset.submittedPrompt.trim()&&!asset.originalPrompt.trim()} title="复制本轮提示词、原参考图和生成参数到新会话，不会立即生成"><Copy/>复制输入新建</button></div>
     <button className="button secondary full" onClick={() => void studio.exportImage(asset).catch(studio.report)} disabled={asset.demo}><Download />导出</button>
     <button className="button primary full" onClick={onPreset}><WandSparkles />保存为效果预设</button>
     {!asset.demo && <button className="button ghost full" onClick={() => void studio.mutate({ type: 'toggle_reference', id: asset.id }).catch(studio.report)}><ImageIcon />{asset.isReference ? '从全局参考图移除' : '加入全局参考图'}</button>}
@@ -58,7 +59,7 @@ export function AssetInspector({ asset, studio, onClose, onOpen, onBranch, onCop
 }
 export function ResultInformation({ asset, studio, onBranch, onCopyInputs, onPreset, onOpen, expanded = false }: { asset: Asset; studio: Studio; onBranch: () => void; onCopyInputs: () => void; onPreset: () => void; onOpen: () => void; expanded?: boolean }) {
   return <div className="result-information"><div className="result-meta"><span>{asset.model}</span><span>{asset.width} × {asset.height}</span><span>{qualityLabel(asset.quality)}</span><span className="saved-state"><span className="status-dot" />{asset.demo ? '示例插画' : '本地已保存'}</span></div>
-    <div className="result-toolbar"><button className="button ghost small" onClick={onBranch} title="将此图作为参考图，带入本轮提示词并新建会话"><GitBranch />以此图新建</button><button className="button ghost small" onClick={onCopyInputs} disabled={!asset.submittedPrompt.trim()&&!asset.originalPrompt.trim()} title="复制本轮提示词、原参考图和生成参数到新会话，不会立即生成"><Copy/>复制输入新建</button><button className="button ghost small" onClick={onPreset}><WandSparkles />保存效果</button><button className="button ghost small" onClick={onOpen}><Maximize2 />原图</button><button className="button ghost small" onClick={() => void studio.exportImage(asset).catch(studio.report)} disabled={asset.demo}><Download />导出</button></div>
+    <div className="result-toolbar"><GalleryImportButton asset={asset} studio={studio}/><button className="button ghost small" onClick={onBranch} title="将此图作为参考图，带入本轮提示词并新建会话"><GitBranch />以此图新建</button><button className="button ghost small" onClick={onCopyInputs} disabled={!asset.submittedPrompt.trim()&&!asset.originalPrompt.trim()} title="复制本轮提示词、原参考图和生成参数到新会话，不会立即生成"><Copy/>复制输入新建</button><button className="button ghost small" onClick={onPreset}><WandSparkles />保存效果</button><button className="button ghost small" onClick={onOpen}><Maximize2 />原图</button><button className="button ghost small" onClick={() => void studio.exportImage(asset).catch(studio.report)} disabled={asset.demo}><Download />导出</button></div>
     <details className="result-record" open={expanded}><summary><ChevronDown size={14} />Prompt 与生成记录{asset.demo && <span className="subtle-badge">示例</span>}</summary><PromptDetails asset={asset} studio={studio} compact /><dl className="properties inline-properties"><dt>参考图</dt><dd>{asset.referenceIds.length} 张</dd><dt>上下文</dt><dd>{asset.previousResponseId ? 'Responses · 接续上一轮' : asset.responseId ? 'Responses · 独立生成' : asset.demo ? '示例记录' : '独立生成'}</dd>{asset.responseId && <><dt>Response ID</dt><dd>{asset.responseId}</dd></>}{asset.previousResponseId && <><dt>接续自</dt><dd>{asset.previousResponseId}</dd></>}</dl></details>
   </div>;
 }

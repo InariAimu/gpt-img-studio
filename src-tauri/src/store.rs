@@ -65,6 +65,7 @@ impl Store {
         connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS studio_state (id INTEGER PRIMARY KEY CHECK(id=1), document TEXT NOT NULL);").map_err(|e| e.to_string())?;
         connection.execute_batch("CREATE TABLE IF NOT EXISTS usage_events (id TEXT PRIMARY KEY, occurred_at INTEGER NOT NULL, event TEXT NOT NULL);").map_err(|e|e.to_string())?;
         connection.execute_batch("CREATE TABLE IF NOT EXISTS model_usage (id TEXT PRIMARY KEY, occurred_at INTEGER NOT NULL, measurement TEXT NOT NULL);").map_err(|e|e.to_string())?;
+        crate::gallery_import::init(&connection)?;
         connection
             .execute(
                 "INSERT OR IGNORE INTO studio_state(id, document) VALUES(1, ?1)",
@@ -101,7 +102,8 @@ impl Store {
         {
             return Err("正在迁移数据，请等待重启".into());
         }
-        if self.operations.load(Ordering::Acquire) > 0 {
+        let gallery_pending = match crate::gallery_import::has_pending(self) { Ok(value) => value, Err(error) => { self.cancel_relocation(); return Err(error); } };
+        if self.operations.load(Ordering::Acquire) > 0 || gallery_pending {
             self.cancel_relocation();
             return Err("仍有任务正在进行，请等待生成、命名或导入完成后再迁移".into());
         }
@@ -169,19 +171,34 @@ impl Store {
         self.delete_session_recycling(session_id, references, token, crate::recycle::directory)
     }
     fn delete_session_recycling(&self, session_id: &str, references: &[String], token: &str, recycle: impl FnOnce(&Path) -> Result<()>) -> Result<Value> {
+        self.delete_recycling(|doc| crate::session_delete::apply(doc, session_id, references, token), |before, after| crate::session_delete::Archive::stage(&self.root, before, after, session_id), recycle)
+    }
+    pub fn delete_workspace(&self, workspace_id: &str, token: &str) -> Result<Value> {
+        self.delete_workspace_recycling(workspace_id, token, crate::recycle::directory)
+    }
+    pub fn delete_sessions(&self, workspace_id: &str, selected: &[String], token: &str) -> Result<Value> {
+        self.delete_sessions_recycling(workspace_id, selected, token, crate::recycle::directory)
+    }
+    fn delete_sessions_recycling(&self, workspace_id: &str, selected: &[String], token: &str, recycle: impl FnOnce(&Path) -> Result<()>) -> Result<Value> {
+        self.delete_recycling(|doc| crate::workspace_delete::apply_sessions(doc, workspace_id, selected, token), |before, after| crate::session_delete::Archive::stage_sessions(&self.root, before, after), recycle)
+    }
+    fn delete_workspace_recycling(&self, workspace_id: &str, token: &str, recycle: impl FnOnce(&Path) -> Result<()>) -> Result<Value> {
+        self.delete_recycling(|doc| crate::workspace_delete::apply(doc, workspace_id, token), |before, after| crate::session_delete::Archive::stage_workspace(&self.root, before, after, workspace_id), recycle)
+    }
+    fn delete_recycling(&self, apply: impl FnOnce(&mut Value) -> Result<()>, stage: impl FnOnce(&Value, &Value) -> Result<crate::session_delete::Archive>, recycle: impl FnOnce(&Path) -> Result<()>) -> Result<Value> {
         self.reserve_relocation()?;
         let _guard = IdleWriteGuard(self);
         let connection = self.connection.lock().map_err(|_| "图库正在恢复，请重启应用")?;
         let saved: String = connection.query_row("SELECT document FROM studio_state WHERE id=1", [], |row| row.get(0)).map_err(|e|e.to_string())?;
         let mut before: Value = serde_json::from_str(&saved).map_err(|e|e.to_string())?;
         let mut after = before.clone();
-        crate::session_delete::apply(&mut after, session_id, references, token)?;
+        apply(&mut after)?;
         after["revision"] = json!(before["revision"].as_u64().unwrap_or(0) + 1);
         let serialized = serde_json::to_string(&after).map_err(|e|e.to_string())?;
-        let archive = crate::session_delete::Archive::stage(&self.root, &before, &after, session_id)?;
+        let archive = stage(&before, &after)?;
         if let Err(error) = connection.execute("UPDATE studio_state SET document=?1 WHERE id=1", params![serialized]) {
             archive.restore()?;
-            return Err(format!("会话删除未保存，图片已恢复：{error}；恢复材料：{}", archive.path.display()));
+            return Err(format!("删除未保存，图片已恢复：{error}；恢复材料：{}", archive.path.display()));
         }
         if let Err(error) = recycle(&archive.path) {
             archive.restore()?;
@@ -458,6 +475,32 @@ pub fn insert_imports(
 
 pub fn apply_action(doc: &mut Value, action: &Value) -> Result<()> {
     match text(action, "type") {
+        "record_generation_elapsed" => {
+            let elapsed = action["elapsedMs"].as_u64().ok_or("生成耗时无效")?;
+            let job = list_mut(doc, "jobs")?.iter_mut()
+                .find(|job| text(job, "id") == text(action, "id")).ok_or("任务不存在")?;
+            if job["status"] != "completed" { return Err("任务尚未完成，不能记录总耗时".into()); }
+            // Preserve the first measurement across re-renders, retries and later viewing.
+            if job["displayElapsedMs"].is_null() { job["displayElapsedMs"] = json!(elapsed); }
+        }
+        "reorder_workspaces" => {
+            let ids: Vec<String> = serde_json::from_value(action["ids"].clone())
+                .map_err(|_| "工作区排序列表无效")?;
+            let workspaces = list_mut(doc, "workspaces")?;
+            let current: std::collections::BTreeSet<_> = workspaces.iter().map(|w| text(w, "id")).collect();
+            let requested: std::collections::BTreeSet<_> = ids.iter().map(String::as_str).collect();
+            if ids.len() != workspaces.len() || requested.len() != ids.len() || requested != current {
+                return Err("工作区列表已变化，请重新拖动排序".into());
+            }
+            // Validate the complete list before changing anything: stale requests must never
+            // remove workspaces or overwrite their other fields with an older UI snapshot.
+            let reordered: Vec<Value> = ids.iter().enumerate().map(|(index, id)| {
+                let mut workspace = workspaces.iter().find(|w| text(w, "id") == id).unwrap().clone();
+                workspace["sortOrder"] = json!(index);
+                workspace
+            }).collect();
+            *workspaces = reordered;
+        }
         "rename_workspace" => {
             let name=text(action,"name").trim();
             if name.is_empty()||name.chars().count()>80||name.chars().any(char::is_control){return Err("工作区名称需为 1–80 个字符，不能包含控制字符".into());}
@@ -472,6 +515,10 @@ pub fn apply_action(doc: &mut Value, action: &Value) -> Result<()> {
         }
         "move_session" => {
             crate::session_move::apply(doc, text(action, "id"), text(action, "workspaceId"))?
+        }
+        "move_sessions" => {
+            let selected: Vec<String> = serde_json::from_value(action["sessionIds"].clone()).map_err(|_| "所选会话列表无效")?;
+            crate::session_move::apply_many(doc, &selected, text(action, "sourceWorkspaceId"), text(action, "workspaceId"))?
         }
         "create_workspace" => {
             let name = text(action, "name").trim();
@@ -613,6 +660,19 @@ pub fn apply_action(doc: &mut Value, action: &Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn generation_elapsed_preserves_first_measurement_and_rejects_unfinished_jobs() {
+        let mut doc = json!({"jobs":[{"id":"done","status":"completed"},{"id":"running","status":"running"}]});
+        apply_action(&mut doc, &json!({"type":"record_generation_elapsed","id":"done","elapsedMs":12345})).unwrap();
+        apply_action(&mut doc, &json!({"type":"record_generation_elapsed","id":"done","elapsedMs":99999})).unwrap();
+        assert_eq!(doc["jobs"][0]["displayElapsedMs"],12345);
+        let saved = doc.clone();
+        for action in [
+            json!({"type":"record_generation_elapsed","id":"running","elapsedMs":100}),
+            json!({"type":"record_generation_elapsed","id":"done","elapsedMs":-1}),
+            json!({"type":"record_generation_elapsed","id":"missing","elapsedMs":100}),
+        ] { assert!(apply_action(&mut doc,&action).is_err()); assert_eq!(doc,saved); }
+    }
     fn session_input_copy_document() -> Value {
         let mut doc: Value = serde_json::from_str(SEED).unwrap();
         doc["assets"][0]["submittedPrompt"] = json!("实际提交的这一轮提示词");
@@ -702,6 +762,126 @@ mod tests {
         }
         store
     }
+    fn workspace_deletion_store() -> Store {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../output/workspace-delete/tests").join(id());
+        let store = Store::open(root).unwrap();
+        store.change(|doc| { *doc = crate::workspace_delete::tests::document(); Ok(()) }).unwrap();
+        for path in ["assets/out1.png","thumbnails/out1.webp","assets/out2.png","assets/private.png","assets/global.png","assets/sharedout.png","assets/other.png"] {
+            fs::write(store.root.join(path), path.as_bytes()).unwrap();
+        }
+        store
+    }
+    fn batch_store() -> Store {
+        let root=PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../output/workspace-batch/tests").join(id());
+        let store=Store::open(root).unwrap();
+        store.change(|doc| { *doc=crate::workspace_delete::tests::document(); Ok(()) }).unwrap();
+        for path in ["assets/out1.png","thumbnails/out1.webp","assets/out2.png","assets/private.png","assets/global.png","assets/sharedout.png","assets/other.png"] { fs::write(store.root.join(path),path.as_bytes()).unwrap(); }
+        store
+    }
+    #[cfg(windows)]
+    #[test]
+    fn batch_delete_recycles_once_and_rolls_back_all_records_and_files_on_failure() {
+        let store=batch_store();
+        let selected=vec!["s1".into(),"s2".into()];
+        let before=store.read().unwrap();
+        let token=crate::workspace_delete::preview_sessions(&before,"w",&selected).unwrap().token;
+        assert!(store.delete_sessions_recycling("w",&selected,&token,|_|Err("simulated recycle failure".into())).unwrap_err().contains("删除已取消并恢复"));
+        let mut restored=store.read().unwrap();restored["revision"]=before["revision"].clone();assert_eq!(restored,before);
+        for path in ["assets/out1.png","thumbnails/out1.webp","assets/out2.png"] { assert_eq!(fs::read(store.root.join(path)).unwrap(),path.as_bytes()); }
+        let after=store.delete_sessions_recycling("w",&selected,&token,|path|{
+            let manifest:Value=serde_json::from_slice(&fs::read(path.join("session.json")).unwrap()).unwrap();
+            assert_eq!(manifest["scope"],"sessions");
+            assert_eq!(manifest["sessions"].as_array().unwrap().len(),2);
+            assert_eq!(manifest["jobs"].as_array().unwrap().len(),2);
+            assert!(path.join("assets/out1.png").exists());assert!(path.join("assets/out2.png").exists());
+            assert!(!path.join("assets/private.png").exists());
+            crate::recycle::directory(path)
+        }).unwrap();
+        assert_eq!(after["revision"].as_u64().unwrap(),before["revision"].as_u64().unwrap()+3);
+        assert_eq!(after["workspaces"],before["workspaces"]);
+        for name in ["private","global","sharedout","other"] { assert!(store.root.join(format!("assets/{name}.png")).exists()); }
+        let root=store.root.clone();drop(store);assert_eq!(Store::open(root).unwrap().read().unwrap(),after);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn batch_delete_crash_recovery_before_and_after_atomic_commit() {
+        for committed in [false,true] {
+            let store=batch_store();let before=store.read().unwrap();let selected=vec!["s1".into(),"s2".into()];
+            let token=crate::workspace_delete::preview_sessions(&before,"w",&selected).unwrap().token;
+            let mut after=before.clone();crate::workspace_delete::apply_sessions(&mut after,"w",&selected,&token).unwrap();
+            let archive=crate::session_delete::Archive::stage_sessions(&store.root,&before,&after).unwrap();
+            if committed { store.change(|doc|{*doc=after.clone();Ok(())}).unwrap(); }
+            let expected=store.read().unwrap();let root=store.root.clone();drop(store);
+            let reopened=Store::open(root).unwrap();assert_eq!(reopened.read().unwrap(),expected);
+            for name in ["out1","out2"] { assert_eq!(reopened.root.join(format!("assets/{name}.png")).exists(),!committed); }
+            assert!(reopened.root.join("assets/private.png").exists());assert!(!archive.path.exists());
+        }
+    }
+    #[test]
+    fn batch_move_database_commits_once_and_invalid_later_session_rolls_back() {
+        let store=batch_store();let before=store.read().unwrap();
+        store.change(|doc|{doc["sessions"][1]["referenceIds"]=json!(["missing"]);Ok(())}).unwrap();
+        let invalid=store.read().unwrap();
+        let action=json!({"type":"move_sessions","sessionIds":["s1","s2"],"sourceWorkspaceId":"w","workspaceId":"v"});
+        assert!(store.change_when_idle(|doc|apply_action(doc,&action)).is_err());
+        assert_eq!(store.read().unwrap(),invalid);
+        store.change(|doc|{*doc=before.clone();Ok(())}).unwrap();let revision=store.read().unwrap()["revision"].as_u64().unwrap();
+        let after=store.change_when_idle(|doc|apply_action(doc,&action)).unwrap();
+        assert_eq!(after["revision"],revision+1);
+        for id in ["s1","s2"] { assert_eq!(find(&after,"sessions",id).unwrap()["workspaceId"],"v"); }
+        for name in ["out1","out2","private","global","sharedout","other"] { assert!(store.root.join(format!("assets/{name}.png")).exists()); }
+    }
+    #[test]
+    fn workspace_delete_failure_and_unsafe_paths_preserve_database_and_files() {
+        let store = workspace_deletion_store(); let before = store.read().unwrap();
+        let token = crate::workspace_delete::preview(&before,"w").unwrap().token;
+        assert!(store.delete_workspace_recycling("w",&token,|_| Err("simulated recycle failure".into())).unwrap_err().contains("删除已取消并恢复"));
+        let mut restored = store.read().unwrap(); restored["revision"] = before["revision"].clone(); assert_eq!(restored,before);
+        for path in ["assets/out1.png","thumbnails/out1.webp","assets/out2.png","assets/private.png"] { assert_eq!(fs::read(store.root.join(path)).unwrap(),path.as_bytes()); }
+        store.change(|doc| { doc["assets"][2]["path"] = json!("../outside.png"); Ok(()) }).unwrap();
+        let before = store.read().unwrap(); let token = crate::workspace_delete::preview(&before,"w").unwrap().token;
+        assert!(store.delete_workspace("w",&token).is_err()); assert_eq!(store.read().unwrap(),before);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn workspace_delete_recycles_atomically_and_preserves_shared_file_paths() {
+        let store = workspace_deletion_store();
+        store.change(|doc| { list_mut(doc,"assets")?.push(json!({"id":"same-file","workspaceId":"v","sessionId":"other","path":"assets/out2.png","referenceIds":[]})); Ok(()) }).unwrap();
+        let token = crate::workspace_delete::preview(&store.read().unwrap(),"w").unwrap().token;
+        let after = store.delete_workspace_recycling("w",&token,|path| {
+            let manifest: Value = serde_json::from_slice(&fs::read(path.join("session.json")).unwrap()).unwrap();
+            assert_eq!(manifest["workspace"]["id"],"w"); assert_eq!(manifest["sessions"].as_array().unwrap().len(),2);
+            assert!(path.join("assets/out1.png").exists()); assert!(!path.join("assets/private.png").exists()); assert!(!path.join("assets/out2.png").exists());
+            crate::recycle::directory(path)
+        }).unwrap();
+        assert!(find(&after,"workspaces","w").is_err()); assert!(find(&after,"assets","out2").is_err());
+        assert!(!store.root.join("assets/out1.png").exists()); assert!(store.root.join("assets/out2.png").exists());
+        for name in ["private","global","sharedout","other"] { assert!(store.root.join(format!("assets/{name}.png")).exists()); }
+        let root = store.root.clone(); drop(store); assert_eq!(Store::open(root).unwrap().read().unwrap(),after);
+    }
+    #[cfg(windows)]
+    #[test]
+    fn workspace_delete_interrupted_before_and_after_commit_recovers_on_reopen() {
+        for committed in [false,true] {
+            let store = workspace_deletion_store(); let before = store.read().unwrap();
+            let mut after = before.clone(); let token = crate::workspace_delete::preview(&before,"w").unwrap().token;
+            crate::workspace_delete::apply(&mut after,"w",&token).unwrap();
+            let archive = crate::session_delete::Archive::stage_workspace(&store.root,&before,&after,"w").unwrap();
+            if committed { store.change(|doc| { *doc = after.clone(); Ok(()) }).unwrap(); }
+            let saved = store.read().unwrap(); let root = store.root.clone(); drop(store);
+            let reopened = Store::open(root).unwrap(); assert_eq!(reopened.read().unwrap(),saved);
+            assert_eq!(reopened.root.join("assets/out1.png").exists(),!committed);
+            assert!(reopened.root.join("assets/private.png").exists()); assert!(!archive.path.exists());
+        }
+    }
+    #[cfg(windows)]
+    #[test]
+    fn workspace_delete_empty_workspace_is_persisted_without_removing_reference_files() {
+        let store = workspace_deletion_store();
+        store.change(|doc| {doc["workspaces"]=json!([{"id":"w"}]);doc["sessions"]=json!([]);doc["jobs"]=json!([]);doc["presets"]=json!([]);doc["assets"]=json!([doc["assets"][0].clone()]);Ok(())}).unwrap();
+        let preview = crate::workspace_delete::preview(&store.read().unwrap(),"w").unwrap(); assert_eq!(preview.session_count,0);
+        let after = store.delete_workspace("w",&preview.token).unwrap(); assert!(after["workspaces"].as_array().unwrap().is_empty()); assert!(store.root.join("assets/private.png").exists());
+    }
     #[test]
     fn session_delete_recycle_failure_restores_records_and_original_files() {
         let store = deletion_store();
@@ -784,6 +964,83 @@ mod tests {
         assert!(!reopened.root.join("assets/private.png").exists());
         assert!(!archive_path.exists());
     }
+    #[test]
+    fn workspace_order_persists_without_changing_content_and_rejects_stale_lists() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../output/workspace-order/tests").join(id());
+        let store = Store::open(root.clone()).unwrap();
+        let before = store.read().unwrap();
+        let ids: Vec<_> = before["workspaces"].as_array().unwrap().iter().rev().map(|w| text(w, "id").to_owned()).collect();
+        assert!(ids.len() > 1);
+        let saved = store.change(|doc| apply_action(doc, &json!({"type":"reorder_workspaces","ids":ids}))).unwrap();
+        let mut expected = before.clone();
+        let mut reordered = before["workspaces"].as_array().unwrap().clone();
+        reordered.reverse();
+        for (index, workspace) in reordered.iter_mut().enumerate() { workspace["sortOrder"] = json!(index); }
+        expected["workspaces"] = json!(reordered);
+        expected["revision"] = saved["revision"].clone();
+        assert_eq!(saved, expected); // Sessions, assets and all unrelated metadata are untouched.
+        let mut duplicate = ids.clone(); duplicate[1] = duplicate[0].clone();
+        let mut unknown = ids.clone(); unknown[0] = "missing".into();
+        for invalid in [json!(duplicate), json!(unknown), json!(&ids[1..]), json!(null), json!([1])] {
+            assert!(store.change(|doc| apply_action(doc, &json!({"type":"reorder_workspaces","ids":invalid}))).is_err());
+            assert_eq!(store.read().unwrap(), saved);
+        }
+        drop(store);
+        let reopened = Store::open(root).unwrap();
+        assert_eq!(reopened.read().unwrap(), saved);
+        reopened.change(|doc| apply_action(doc, &json!({"type":"create_workspace","name":"New workspace"}))).unwrap();
+        let after_create = reopened.read().unwrap();
+        assert!(reopened.change(|doc| apply_action(doc, &json!({"type":"reorder_workspaces","ids":ids}))).is_err());
+        assert_eq!(reopened.read().unwrap(), after_create);
+        let mut synced = after_create.clone();
+        studio_sync::apply(&mut synced, &studio_sync::project(&after_create));
+        assert_eq!(synced["workspaces"], after_create["workspaces"]);
+    }
+
+    #[test]
+    fn workspace_order_sync_converges_across_devices_and_keeps_conflicts_visible() {
+        use studio_sync::{apply, mutations, project, reconcile, ClientState, Record};
+        let original = json!({"workspaces":[
+            {"id":"a","name":"A","createdAt":"2026-11-01"},
+            {"id":"b","name":"B","createdAt":"2026-11-02"},
+            {"id":"c","name":"C","createdAt":"2026-11-03"}
+        ],"sessions":[],"assets":[],"presets":[],"jobs":[]});
+        let baseline = project(&original);
+        let state = ClientState { baseline: baseline.iter().map(|(key, value)| (key.clone(), Record {key:key.clone(),revision:1,value:Some(value.clone())})).collect(), ..Default::default() };
+        let mut sender = original.clone();
+        apply_action(&mut sender, &json!({"type":"reorder_workspaces","ids":["c","a","b"]})).unwrap();
+        let outgoing = mutations(&project(&sender), &state);
+        assert_eq!(outgoing.len(), 3);
+        let remote: Vec<_> = outgoing.iter().map(|m| {
+            studio_sync::validate_entity(&m.key, &m.value).unwrap();
+            Record {key:m.key.clone(),revision:2,value:m.value.clone()}
+        }).collect();
+        let mut receiver = original.clone(); receiver["workspaces"].as_array_mut().unwrap().reverse();
+        let (merged, next) = reconcile(&project(&receiver), state.clone(), &[], &[], &remote);
+        assert!(next.conflicts.is_empty());
+        apply(&mut receiver, &merged);
+        assert_eq!(receiver["workspaces"], sender["workspaces"]);
+        assert!(mutations(&project(&receiver), &next).is_empty());
+        // A fresh device and a device with an unrelated old array order converge too.
+        let mut fresh = json!({}); apply(&mut fresh, &merged);
+        assert_eq!(fresh["workspaces"], sender["workspaces"]);
+        // Sorting never silently wins over an offline change on another device.
+        let mut offline = original.clone();
+        apply_action(&mut offline, &json!({"type":"reorder_workspaces","ids":["b","c","a"]})).unwrap();
+        let (conflicted, conflict_state) = reconcile(&project(&offline), state, &[], &[], &remote);
+        assert!(!conflict_state.conflicts.is_empty());
+        apply(&mut offline, &conflicted);
+        assert_eq!(offline["workspaces"][0]["id"], "b");
+        // Equal ranks and unranked records from older clients have deterministic tie breaks.
+        let tied = json!({"workspaces":[{"id":"b","sortOrder":0},{"id":"a","sortOrder":0},{"id":"d"},{"id":"c"}]});
+        let mut first = tied.clone(); let mut second = tied.clone(); second["workspaces"].as_array_mut().unwrap().reverse();
+        apply(&mut first, &project(&tied)); apply(&mut second, &project(&tied));
+        assert_eq!(first["workspaces"], second["workspaces"]);
+        assert_eq!(first["workspaces"].as_array().unwrap().iter().map(|w|text(w,"id")).collect::<Vec<_>>(), vec!["a","b","c","d"]);
+        let mut legacy = original.clone(); apply(&mut legacy, &baseline);
+        assert_eq!(legacy["workspaces"], original["workspaces"]);
+    }
+
     #[test]
     fn workspace_rename_persists_and_preserves_all_relationships(){
         let dir=tempfile::tempdir().unwrap();let store=Store::open(dir.path().into()).unwrap();let before=store.read().unwrap();

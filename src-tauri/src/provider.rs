@@ -470,7 +470,16 @@ pub async fn text_response(
     } else {
         json!({"type":"text","text":prompt})
     }];
-    for (bytes, mime, _) in image_data(store, doc, reference_ids)? {
+    for (mut bytes, mut mime, _) in image_data(store, doc, reference_ids)? {
+        if operation == "gallery_label" {
+            bytes = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<u8>> {
+                let image = image::load_from_memory(&bytes).map_err(|_| "无法解码待导入图片")?.thumbnail(1280, 1280).to_rgb8();
+                let mut output = std::io::Cursor::new(Vec::new());
+                image::DynamicImage::ImageRgb8(image).write_to(&mut output, image::ImageFormat::Jpeg).map_err(|_| "无法准备标签预览图")?;
+                Ok(output.into_inner())
+            }).await.map_err(|e|e.to_string())??;
+            mime = "image/jpeg".into();
+        }
         let data = format!("data:{mime};base64,{}", STANDARD.encode(bytes));
         content.push(if responses {
             json!({"type":"input_image","image_url":data})

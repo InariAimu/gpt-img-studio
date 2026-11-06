@@ -3,6 +3,7 @@ mod provider;
 mod providers;
 mod session_move;
 mod session_delete;
+mod workspace_delete;
 mod recycle;
 mod storage;
 mod taskbar;
@@ -10,6 +11,7 @@ mod store;
 mod usage;
 mod sync;
 mod gallery;
+mod gallery_import;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use provider::GenerationRequest;
 use serde::Deserialize;
@@ -55,6 +57,20 @@ fn bootstrap(app: tauri::AppHandle, store: State<'_, Store>) -> Result<Value> {
 #[tauri::command]
 fn gallery_settings(store: State<'_, Store>) -> Result<Value> { gallery::view(&store) }
 #[tauri::command]
+fn gallery_tasks(store: State<'_, Store>) -> Result<Value> { gallery_import::view(&store) }
+#[tauri::command]
+fn enqueue_gallery_import(app: tauri::AppHandle, asset_ids: Vec<String>) -> Result<Value> { gallery_import::enqueue(&app,asset_ids) }
+#[tauri::command]
+fn control_gallery_import(app: tauri::AppHandle, task_id: String, action: String) -> Result<Value> { gallery_import::control(&app,&task_id,&action) }
+#[tauri::command]
+fn open_gallery_post(url: String) -> Result<()> {
+    let parsed=reqwest::Url::parse(&url).map_err(|_|"图库链接无效")?;
+    if !["http","https"].contains(&parsed.scheme()) || !parsed.username().is_empty() || parsed.password().is_some() {return Err("图库链接无效".into());}
+    #[cfg(target_os="windows")]
+    std::process::Command::new("rundll32.exe").args(["url.dll,FileProtocolHandler",parsed.as_str()]).spawn().map_err(|e|e.to_string())?;
+    Ok(())
+}
+#[tauri::command]
 fn save_gallery_settings(store: State<'_, Store>, config: gallery::Config, token: Option<String>, forget_token: bool) -> Result<Value> {
     gallery::save(&store, config, token, forget_token)
 }
@@ -76,7 +92,7 @@ async fn sync_now(app:tauri::AppHandle)->Result<Value>{sync::run(&app).await}
 fn resolve_sync_conflict(app:tauri::AppHandle,store:State<'_,Store>,runtime:State<'_,sync::Runtime>,key:String,use_local:bool)->Result<Value>{Ok(changed(&app,sync::resolve(&store,&runtime,key,use_local)?))}
 #[tauri::command]
 fn dispatch(app: tauri::AppHandle, store: State<'_, Store>, action: Value) -> Result<Value> {
-    if action["type"] == "move_session" {
+    if action["type"] == "move_session" || action["type"] == "move_sessions" {
         return Ok(changed(
             &app,
             store.change_when_idle(|doc| apply_action(doc, &action))?,
@@ -94,6 +110,26 @@ fn preview_session_delete(store: State<'_, Store>, session_id: String) -> Result
 #[tauri::command]
 fn delete_session(app: tauri::AppHandle, store: State<'_, Store>, session_id: String, reference_ids: Vec<String>, token: String) -> Result<Value> {
     let result = store.delete_session(&session_id, &reference_ids, &token);
+    if let Ok(document) = store.read() { changed(&app, document); }
+    result
+}
+#[tauri::command]
+fn preview_workspace_delete(store: State<'_, Store>, workspace_id: String) -> Result<workspace_delete::Preview> {
+    workspace_delete::preview(&store.read()?, &workspace_id)
+}
+#[tauri::command]
+fn delete_workspace(app: tauri::AppHandle, store: State<'_, Store>, workspace_id: String, token: String) -> Result<Value> {
+    let result = store.delete_workspace(&workspace_id, &token);
+    if let Ok(document) = store.read() { changed(&app, document); }
+    result
+}
+#[tauri::command]
+fn preview_sessions_delete(store: State<'_, Store>, workspace_id: String, session_ids: Vec<String>) -> Result<workspace_delete::Preview> {
+    workspace_delete::preview_sessions(&store.read()?, &workspace_id, &session_ids)
+}
+#[tauri::command]
+fn delete_sessions(app: tauri::AppHandle, store: State<'_, Store>, workspace_id: String, session_ids: Vec<String>, token: String) -> Result<Value> {
+    let result = store.delete_sessions(&workspace_id, &session_ids, &token);
     if let Ok(document) = store.read() { changed(&app, document); }
     result
 }
@@ -642,6 +678,7 @@ pub fn run() {
             }
             store.sync_usage_journal().map_err(std::io::Error::other)?;
             store.recover_interrupted().map_err(std::io::Error::other)?;
+            gallery_import::recover(&store).map_err(std::io::Error::other)?;
             app.asset_protocol_scope()
                 .allow_directory(store.root.join("assets"), true)?;
             app.asset_protocol_scope()
@@ -649,6 +686,7 @@ pub fn run() {
             let webview_directory = store.root.join("webview2");
             app.manage(store);
             app.manage(sync::Runtime::default());
+            app.manage(gallery_import::Runtime::default());
             if let Some(path)=std::env::var_os("GPT_IMG_STUDIO_SYNC_CONFIG") {
                 sync::import_config(&app.state::<Store>(),&app.state::<sync::Runtime>(),PathBuf::from(path)).map_err(std::io::Error::other)?;
             }
@@ -667,6 +705,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             bootstrap,
             gallery_settings,
+            gallery_tasks,
+            enqueue_gallery_import,
+            control_gallery_import,
+            open_gallery_post,
             save_gallery_settings,
             test_gallery_settings,
             sync_status,
@@ -678,6 +720,10 @@ pub fn run() {
             dispatch,
             preview_session_delete,
             delete_session,
+            preview_workspace_delete,
+            delete_workspace,
+            preview_sessions_delete,
+            delete_sessions,
             save_settings,
             network_settings,
             test_network_settings,

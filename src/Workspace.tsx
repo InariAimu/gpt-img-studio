@@ -1,6 +1,7 @@
 import { OptionSelect } from './OptionSelect';
 import ReferencePicker from './ReferencePicker';
 import UserMessage from './UserMessage';
+import GenerationElapsed, { preparingGeneratedImage } from './GenerationElapsed';
 import { useEffect, useMemo, useRef, useState, type ClipboardEvent } from 'react';
 import { Aperture, ArrowUp, Check, Columns2, FolderInput, ImagePlus, ListTree, LoaderCircle, MessageSquare, Plus, SlidersHorizontal, Sparkles, Trash2, WandSparkles, X } from 'lucide-react';
 import { AssetCard, Empty, PromptDetails, ResultInformation, timeLabel } from './components';
@@ -200,11 +201,11 @@ export default function Workspace({ studio, session, onWorkspace, onOpen, onBran
         <div className="thread-scroll" ref={threadRef}>
           {view === 'conversation' && <div className="conversation-content">
             {!sessionAssets.length && !runningJob && <Empty title="从一个想法开始" description="添加参考图，写下 Prompt。生成结果和每一次修改都会留在这里。" icon={<Sparkles />} />}
-            {sessionAssets.map((asset, index) => <article className="conversation-turn" key={asset.id}><div className="turn-heading"><span className="avatar user-avatar">你</span><span>{timeLabel(asset.createdAt)}</span><span className="turn-number">第 {index + 1} 次生成</span></div><UserMessage text={asset.originalPrompt||asset.submittedPrompt||'导入的图片'} referenceIds={asset.referenceIds} assets={studio.document.assets} imageUrl={studio.imageUrl} onOpen={onOpen}/><div className="assistant-heading"><span className="assistant-mark"><Sparkles size={13} /></span><span>GPT Image Studio</span><span className="muted">{asset.demo ? '设计示例' : '生成完成'}</span></div>
-              <div className="result-card"><button className="conversation-image" aria-label={`放大 ${asset.title}`} onClick={() => onOpen(asset.id)}><img src={studio.imageUrl(asset)} alt={asset.title} loading="lazy" /></button>
+            {sessionAssets.map((asset, index) => { const job=studio.document.jobs.find(job=>job.assetIds.includes(asset.id)); const startedAt=studio.generationStartedAt(job); return <article className="conversation-turn" key={asset.id}><div className="turn-heading"><span className="avatar user-avatar">你</span><span>{timeLabel(asset.createdAt)}</span><span className="turn-number">第 {index + 1} 次生成</span></div><UserMessage text={asset.originalPrompt||asset.submittedPrompt||'导入的图片'} referenceIds={asset.referenceIds} assets={studio.document.assets} imageUrl={studio.imageUrl} onOpen={onOpen}/><div className="assistant-heading"><span className="assistant-mark"><Sparkles size={13} /></span><span>GPT Image Studio</span><span className="muted">{asset.demo ? '设计示例' : job&&preparingGeneratedImage(job,startedAt) ? '正在加载图片' : '生成完成'}{!asset.demo&&<GenerationElapsed job={job} startedAt={startedAt}/>}</span></div>
+              <div className="result-card"><button className="conversation-image" aria-label={`放大 ${asset.title}`} onClick={() => onOpen(asset.id)}><img src={studio.imageUrl(asset)} alt={asset.title} loading={startedAt!==undefined?'eager':'lazy'} /></button>
               <ResultInformation asset={asset} studio={studio} expanded onOpen={() => onOpen(asset.id)} onBranch={() => onBranch(asset)} onCopyInputs={()=>onCopyInputs(asset)} onPreset={() => onPreset(asset)} /></div>
-            </article>)}
-            {runningJob&&<article className="conversation-turn"><div className="turn-heading"><span className="avatar user-avatar">你</span><span>{timeLabel(runningJob.createdAt)}</span><span className="turn-number">正在生成</span></div><UserMessage text={runningJob.originalPrompt||runningJob.prompt} referenceIds={runningJob.referenceIds} assets={studio.document.assets} imageUrl={studio.imageUrl} onOpen={onOpen}/><div className="pending-generation"><LoaderCircle className="spin"/><div>正在生成图片<p>可以切换页面，任务会继续运行。</p></div></div></article>}
+            </article>;})}
+            {runningJob&&<article className="conversation-turn"><div className="turn-heading"><span className="avatar user-avatar">你</span><span>{timeLabel(runningJob.createdAt)}</span><span className="turn-number">正在生成</span></div><UserMessage text={runningJob.originalPrompt||runningJob.prompt} referenceIds={runningJob.referenceIds} assets={studio.document.assets} imageUrl={studio.imageUrl} onOpen={onOpen}/><div className="pending-generation"><LoaderCircle className="spin"/><div>正在生成图片<GenerationElapsed job={runningJob} startedAt={studio.generationStartedAt(runningJob)}/><p>可以切换页面，任务会继续运行。</p></div></div></article>}
             {failedJob&&<article className="conversation-turn"><div className="turn-heading"><span className="avatar user-avatar">你</span><span>{timeLabel(failedJob.createdAt)}</span><span className="turn-number">未完成</span></div><UserMessage text={failedJob.originalPrompt||failedJob.prompt} referenceIds={failedJob.referenceIds} assets={studio.document.assets} imageUrl={studio.imageUrl} onOpen={onOpen}/><div className="generation-error"><span>最近一次任务未完成</span><p>{failedJob.error}</p><button className="button secondary small" onClick={() => { setDraft(failedJob.prompt); setOriginal(failedJob.originalPrompt || failedJob.prompt); setReferenceIds(failedJob.referenceIds || []); setContext(failedJob.contextMode || 'new'); if(failedJob.imageSelection)setImageSelection(failedJob.imageSelection); }}>重新载入此任务的输入</button></div></article>}
           </div>}
           {view === 'results' && <div className="results-grid">{[...sessionAssets].reverse().map(asset => <AssetCard key={asset.id} asset={asset} studio={studio} onSelect={() => onOpen(asset.id)} onOpen={() => onOpen(asset.id)} />)}{!sessionAssets.length && <Empty title="还没有生成结果" description="完成生成后，可以在这里集中浏览作品。" />}</div>}
@@ -234,6 +235,6 @@ export default function Workspace({ studio, session, onWorkspace, onOpen, onBran
         </div>
       </section>
     </div>
-    {picking && <ReferencePicker studio={studio} selectedIds={referenceIds} onChange={setReferenceIds} onImport={importReferences} onClose={()=>setPicking(false)}/>}
+    {picking && <ReferencePicker studio={studio} workspaceId={session.workspaceId} selectedIds={referenceIds} onChange={setReferenceIds} onImport={importReferences} onClose={()=>setPicking(false)}/>}
   </>;
 }

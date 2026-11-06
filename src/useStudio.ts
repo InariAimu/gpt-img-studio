@@ -4,8 +4,9 @@ import { listen } from '@tauri-apps/api/event';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import seed from './data/seed.json';
 import { SettingsWrites } from './settingsWrites';
+import { waitForGeneratedImages } from './GenerationElapsed';
 import { SYNC_INTERVAL_MS, type SyncView } from './syncState';
-import type { Asset, Bootstrap, GenerationRequest, NetworkConfig, NetworkState, RefineResult, SessionDeletePreview, Settings, StudioAction, StudioDocument, UsageSummary } from './types';
+import type { Asset, Bootstrap, GalleryTask, GenerationRequest, Job, NetworkConfig, NetworkState, RefineResult, SessionDeletePreview, WorkspaceDeletePreview, Settings, StudioAction, StudioDocument, UsageSummary } from './types';
 
 export const desktop = isTauri();
 export interface Toast { id: number; message: string; error: boolean }
@@ -18,6 +19,9 @@ export function useStudio() {
   const [settingsError, setSettingsError] = useState('');
   const [sync, setSync] = useState<SyncView>();
   const [syncBusy, setSyncBusy] = useState(false);
+  const [galleryTasks,setGalleryTasks]=useState<GalleryTask[]>([]);
+  const [galleryDraft,setGalleryDraft]=useState<{assetIds:string[];selectedIds:string[]}|null>(null);
+  const [activeGenerations, setActiveGenerations] = useState<Record<string, { startedAt: number; previousJobs: Set<string> }>>({});
   const syncBusyRef = useRef(false);
   const bootRef = useRef(boot); bootRef.current = boot;
   const committedSettings = useRef(boot.document.settings);
@@ -100,7 +104,7 @@ export function useStudio() {
       if(!active||syncBusyRef.current||isEditing())return;
       try {
         const state=await refreshSync();
-        if(!active||!state?.config.enabled||isEditing())return;
+        if(!active||!state?.config.enabled||state.status.pausedForGallery||isEditing())return;
         await syncNow();
       }catch{/* The titlebar and sync page show errors; background attempts stay quiet. */}
     };
@@ -115,10 +119,33 @@ export function useStudio() {
   const requireDesktop = useCallback(() => {
     if (!desktop) throw new Error('浏览器中仅提供界面预览，请在 Windows 桌面版使用此功能。');
   }, []);
+  useEffect(()=>{
+    if(!desktop)return;
+    let active=true,dispose:(()=>void)|undefined;
+    void listen<GalleryTask[]>('studio:gallery-tasks',e=>{if(active)setGalleryTasks(e.payload);}).then(fn=>{
+      if(!active){fn();return;}dispose=fn;
+      void invoke<GalleryTask[]>('gallery_tasks').then(v=>{if(active)setGalleryTasks(v);}).catch(error=>notify(String(error),true));
+    });
+    return()=>{active=false;dispose?.();};
+  },[notify]);
+  const requestGalleryImport=useCallback((assetIds:string[],selectedIds=assetIds)=>setGalleryDraft({assetIds,selectedIds}),[]);
+  const enqueueGalleryImport=useCallback(async(assetIds:string[])=>{
+    requireDesktop();await settingsWrites.current!.idle();
+    const tasks=await invoke<GalleryTask[]>('enqueue_gallery_import',{assetIds});setGalleryTasks(tasks);
+    notify(`已将 ${assetIds.length} 张图片加入图库导入队列`);
+  },[requireDesktop,notify]);
+  const controlGalleryImport=useCallback(async(taskId:string,action:'retry'|'cancel')=>{
+    requireDesktop();setGalleryTasks(await invoke<GalleryTask[]>('control_gallery_import',{taskId,action}));
+  },[requireDesktop]);
+  const openGalleryPost=useCallback(async(url:string)=>{requireDesktop();await invoke('open_gallery_post',{url});},[requireDesktop]);
   const mutate = useCallback(async (action: StudioAction) => {
     requireDesktop();
     const document = action.type === 'delete_session'
       ? await invoke<StudioDocument>('delete_session', { sessionId: action.id, referenceIds: action.referenceIds, token: action.token })
+      : action.type === 'delete_workspace'
+      ? await invoke<StudioDocument>('delete_workspace', { workspaceId: action.id, token: action.token })
+      : action.type === 'delete_sessions'
+      ? await invoke<StudioDocument>('delete_sessions', { workspaceId: action.workspaceId, sessionIds: action.sessionIds, token: action.token })
       : await invoke<StudioDocument>('dispatch', { action });
     accept(document); return document;
   }, [accept, requireDesktop]);
@@ -148,6 +175,35 @@ export function useStudio() {
     return document;
   },[mutate,notify]);
   const saveSettings = useCallback((settings: Settings, providerKeys: Record<string,string> = {}) => settingsWrites.current!.enqueue(settings, providerKeys), []);
+  const previewDeleteWorkspace = useCallback(async (id:string) => {
+    requireDesktop();
+    const editor = sessionEditors.current.values().next().value;
+    if (editor) await editor({type:'flush_session'});
+    return invoke<WorkspaceDeletePreview>('preview_workspace_delete', {workspaceId:id});
+  }, [requireDesktop]);
+  const deleteWorkspace = useCallback(async (id:string, token:string) => {
+    await settingsWrites.current!.idle();
+    const action = {type:'delete_workspace',id,token};
+    const editor = sessionEditors.current.values().next().value;
+    const document = await (editor ? editor(action) : mutate(action));
+    notify('工作区已删除，参考图已保留；移除内容已送入系统回收站');
+    return document;
+  }, [mutate,notify]);
+  const previewDeleteSessions = useCallback(async (workspaceId:string, sessionIds:string[]) => {
+    requireDesktop();
+    return invoke<WorkspaceDeletePreview>('preview_sessions_delete', {workspaceId,sessionIds});
+  }, [requireDesktop]);
+  const deleteSessions = useCallback(async (workspaceId:string, sessionIds:string[], token:string) => {
+    await settingsWrites.current!.idle();
+    const document = await mutate({type:'delete_sessions',workspaceId,sessionIds,token});
+    notify(`已删除 ${sessionIds.length} 个会话，参考图已保留；移除内容已送入系统回收站`);
+    return document;
+  }, [mutate,notify]);
+  const moveSessions = useCallback(async (sourceWorkspaceId:string, sessionIds:string[], workspaceId:string) => {
+    const document = await mutate({type:'move_sessions',sourceWorkspaceId,sessionIds,workspaceId});
+    notify(`已将 ${sessionIds.length} 个会话移至「${document.workspaces.find(w=>w.id===workspaceId)?.name||'目标工作区'}」`);
+    return document;
+  }, [mutate,notify]);
   const importImages = useCallback(async (asReference: boolean, workspaceId?: string, sessionId?: string) => {
     requireDesktop();
     const selection = await open({ multiple: true, directory: false, title: asReference ? '导入参考图' : '导入图片', filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif'] }] });
@@ -167,9 +223,6 @@ export function useStudio() {
     if (!destination) return;
     await invoke('export_asset', { assetId: asset.id, destination }); notify('原图已导出');
   }, [notify, requireDesktop]);
-  const generate = useCallback(async (request: GenerationRequest) => {
-    requireDesktop(); await settingsWrites.current!.idle(); const document = await invoke<StudioDocument>('generate', { request }); accept(document); notify('生成完成，原图已保存到本地图库'); return document;
-  }, [accept, notify, requireDesktop]);
   const refine = useCallback(async (prompt: string, referenceIds: string[], mode: string, sessionId: string) => {
     requireDesktop(); await settingsWrites.current!.idle(); return invoke<RefineResult>('refine_prompt', { prompt, referenceIds, mode, sessionId });
   }, [requireDesktop]);
@@ -197,6 +250,39 @@ export function useStudio() {
     if (!boot.dataDir) return '';
     return convertFileSrc(`${boot.dataDir.replace(/[\\/]$/, '')}/${thumbnail && asset.thumbnailPath ? asset.thumbnailPath : asset.path}`);
   }, [boot.dataDir]);
+  const generationStartedAt = (job?: Job) => {
+    if (!job) return undefined;
+    const active = activeGenerations[job.sessionId];
+    return active && !active.previousJobs.has(job.id) ? active.startedAt : undefined;
+  };
+  const generate = useCallback(async (request: GenerationRequest) => {
+    requireDesktop();
+    await settingsWrites.current!.idle();
+    const previousJobs = new Set(bootRef.current.document.jobs.map(job => job.id));
+    const startedAt = Date.now(), started = performance.now();
+    setActiveGenerations(current => ({ ...current, [request.sessionId]: { startedAt, previousJobs } }));
+    try {
+      let document = await invoke<StudioDocument>('generate', { request });
+      accept(document);
+      const job = document.jobs.find(job => job.sessionId === request.sessionId && !previousJobs.has(job.id) && job.status === 'completed');
+      if (job) {
+        try {
+          const assets = job.assetIds.map(id => document.assets.find(asset => asset.id === id));
+          await waitForGeneratedImages(assets.map(asset => asset ? imageUrl(asset) : ''));
+        } catch {
+          notify('生成完成，原图已保存；图片加载失败，请重新打开查看。', true);
+          return document;
+        }
+        const elapsedMs = Math.round(performance.now() - started);
+        try { document = await mutate({ type: 'record_generation_elapsed', id: job.id, elapsedMs }); }
+        catch { notify('图片已生成并显示，但总耗时未能保存。', true); return document; }
+      }
+      notify('生成完成，原图已保存到本地图库');
+      return document;
+    } finally {
+      setActiveGenerations(current => { const next = { ...current }; delete next[request.sessionId]; return next; });
+    }
+  }, [accept, imageUrl, mutate, notify, requireDesktop]);
   const report = useCallback((error: unknown) => notify(error instanceof Error ? error.message : String(error), true), [notify]);
   const listModels = useCallback(async (providerId: string) => { requireDesktop(); await settingsWrites.current!.idle(); return invoke<string[]>('list_provider_models',{providerId}); },[requireDesktop]);
   const usageRecords = useCallback(async () => { requireDesktop(); return invoke<UsageSummary>('usage_records'); },[requireDesktop]);
@@ -205,6 +291,6 @@ export function useStudio() {
   const exportUsage = useCallback(async () => { requireDesktop(); const destination=await save({title:'导出用量记录',defaultPath:'image-studio-usage.jsonl',filters:[{name:'JSON Lines',extensions:['jsonl']}]});if(destination){await invoke('export_usage',{destination});notify('用量日志已导出');} },[requireDesktop,notify]);
   const chooseDataDirectory = useCallback(async () => { requireDesktop(); return open({directory:true,multiple:false,title:'选择空的数据目录'}); },[requireDesktop]);
   const relocateData = useCallback(async (destination:string) => { requireDesktop(); await settingsWrites.current!.idle(); await invoke('relocate_data',{destination});notify('正在迁移数据并重启应用…'); },[requireDesktop,notify]);
-  return { ...boot, ready, loadError, toasts, settingsSaving, settingsError, sync, syncBusy, syncNow, refreshSync, notify, report, refresh, mutate, saveSettings, importImages, importClipboardImages, nameSession, exportImage, generate, refine, imageUrl, listModels, usageRecords, networkSettings, testNetworkSettings, exportUsage, chooseDataDirectory, relocateData, moveSession, registerSessionEditor, previewDeleteSession, deleteSession };
+  return { ...boot, galleryTasks, galleryDraft, setGalleryDraft, requestGalleryImport, enqueueGalleryImport, controlGalleryImport, openGalleryPost, ready, loadError, toasts, settingsSaving, settingsError, sync, syncBusy, syncNow, refreshSync, notify, report, refresh, mutate, saveSettings, importImages, importClipboardImages, nameSession, exportImage, generate, generationStartedAt, refine, imageUrl, listModels, usageRecords, networkSettings, testNetworkSettings, exportUsage, chooseDataDirectory, relocateData, moveSession, registerSessionEditor, previewDeleteSession, deleteSession, previewDeleteWorkspace, deleteWorkspace, previewDeleteSessions, deleteSessions, moveSessions };
 }
 export type Studio = ReturnType<typeof useStudio>;
