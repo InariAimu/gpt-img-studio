@@ -26,7 +26,7 @@ export interface Session {
   id: string; workspaceId: string; title: string; draft: string; originalPrompt: string;
   referenceIds: string[]; contextMode: ContextMode; createdAt: string;
   parentSessionId?: string; parentAssetId?: string; lastResponseId?: string;
-  size?: string; quality?: string;
+  size?: string; quality?: string; complexity?: string; moderation?: string; background?: string; outputFormat?: string; outputCompression?: string; imageCount?: string; frameCount?: string; frameDurationMs?: string;
   imageSelection?: ModelSelection | null;
   titleSource?: 'default' | 'manual' | 'automatic'; titleStatus?: 'pending' | 'failed' | 'complete'; titleError?: string; titleAttempted?: boolean;
   lastProviderBaseUrl?: string; lastMainModel?: string; lastProviderId?: string;
@@ -56,7 +56,7 @@ export interface Bootstrap { document: StudioDocument; dataDir: string; hasImage
 export interface UsageComponent { kind: string; model: string; usageAvailable: boolean; tokens: { totalInput: number | null; output: number | null; cacheRead: number | null; cacheWrite: number | null; reasoning: number | null }; estimatedCostUsd: string | null; estimateStatus: string; cacheBreakdownKnown: boolean; rawUsage: unknown }
 export interface UsageEvent { id: string; sessionId: string; operation: string; provider: { id: string; name: string; kind: string }; model: string; occurredAt: number; requestCount: number; statusCode: number | null; durationMs: number; estimatedCostUsd: string | null; estimateStatus: string; components: UsageComponent[] }
 export interface UsageSummary { totalModelUsages: number; modelJournalPath: string; totalRequests: number; unpricedRequests: number; knownEstimatedCostUsd: string; journalPath: string; records: UsageEvent[] }
-export interface GenerationRequest { sessionId: string; prompt: string; originalPrompt: string; referenceIds: string[]; size: string; quality: string; contextMode: ContextMode; imageSelection?: ModelSelection }
+export interface GenerationRequest { sessionId: string; prompt: string; originalPrompt: string; referenceIds: string[]; size: string; quality: string; complexity?: string; moderation?: string; background?: string; outputFormat?: string; outputCompression?: number; imageCount?: number; frameCount?: number; frameDurationMs?: number; contextMode: ContextMode; imageSelection?: ModelSelection }
 export interface RefineResult { prompt: string; model: string }
 export interface SessionDeletePreview { token: string; removableReferences: Asset[]; preservedReferenceCount: number; removedResultCount: number; preservedResultCount: number }
 export interface WorkspaceDeletePreview { token: string; sessionCount: number; referenceCount: number; removedResultCount: number; preservedResultCount: number }

@@ -10,6 +10,7 @@ mod taskbar;
 mod store;
 mod usage;
 mod sync;
+mod svg;
 mod gallery;
 mod gallery_import;
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -423,11 +424,12 @@ async fn generate(
     }) {
         return Err("当前会话还有任务进行中，请等待完成".into());
     }
-    provider::validate_image_options(
-        text(&initial["settings"]["generation"], "model"),
-        &request.size,
-        &request.quality,
-    )?;
+    provider::validate_generation_options(text(&initial["settings"]["generation"], "model"), text(&initial["settings"]["generation"], "apiMode"), &request)?;
+    for reference_id in &request.reference_ids {
+        if text(find(&initial, "assets", reference_id)?, "mime") == "image/svg+xml" {
+            return Err("SVG 不能作为图片编辑参考图，请先导出并转换为 PNG 或 WebP".into());
+        }
+    }
     let previous_response_id = provider::previous_response_id(&initial, &request)?;
     let job_id = id();
     let job = json!({"id":job_id,"sessionId":request.session_id,"prompt":request.prompt,"originalPrompt":request.original_prompt,"referenceIds":request.reference_ids,"contextMode":request.context_mode,"previousResponseId":previous_response_id,"imageSelection":initial["settings"]["modelAssignments"]["image"],"status":"running","createdAt":now(),"assetIds":[]});
@@ -455,7 +457,14 @@ async fn generate(
             let mut assets = Vec::new();
             let mut error = None;
             for image in output.images {
-                match store.save_image(&image.bytes, &name) {
+                let saved = if request.output_format.as_deref() == Some("svg") {
+                    store.save_svg(&image.bytes, &name)
+                } else if request.output_format.as_deref() == Some("gif") && image::guess_format(&image.bytes).ok() != Some(image::ImageFormat::Gif) {
+                    Err("服务未返回 GIF 动图".into())
+                } else {
+                    store.save_image(&image.bytes, &name)
+                };
+                match saved {
                     Ok(mut asset) => {
                         // Each execution is distinct even when the provider returns identical image bytes.
                         asset["id"] = json!(id());
@@ -470,6 +479,14 @@ async fn generate(
                             initial["settings"]["generation"]["baseUrl"].clone();
                         asset["size"] = json!(request.size);
                         asset["quality"] = json!(request.quality);
+                        asset["complexity"] = json!(request.complexity);
+                        asset["moderation"] = json!(request.moderation);
+                        asset["background"] = json!(request.background);
+                        asset["outputFormat"] = json!(request.output_format);
+                        asset["outputCompression"] = json!(request.output_compression.map(|v| v.to_string()));
+                        asset["imageCount"] = json!(request.image_count.map(|v| v.to_string()));
+                        asset["frameCount"] = json!(request.frame_count.map(|v| v.to_string()));
+                        asset["frameDurationMs"] = json!(request.frame_duration_ms.map(|v| v.to_string()));
                         asset["groupId"] = json!(group_id);
                         if let Some(revised) = image.revised {
                             asset["revisedPrompt"] = json!(revised);

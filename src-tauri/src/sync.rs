@@ -1,6 +1,6 @@
 use crate::{
     network, provider,
-    store::{now, Result, Store},
+    store::{now, text, Result, Store},
 };
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -109,6 +109,11 @@ impl Store {
         );
         studio_sync::protect_references(&mut entities, &previous, &mut state)?;
         studio_sync::apply(&mut doc, &entities);
+        for asset in doc["assets"].as_array_mut().into_iter().flatten() {
+            if asset["demo"] != true && text(asset, "mime") == "image/svg+xml" {
+                asset["thumbnailPath"] = json!(self.ensure_svg_preview(asset)?);
+            }
+        }
         // Remote originals are immediately usable; previews are optional and remain local.
         state.server_id = e.server_id;
         state.cursor = e.cursor;
@@ -324,6 +329,37 @@ pub async fn run(app: &tauri::AppHandle) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sync_skips_demo_svg_and_generates_real_svg_preview() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../output/sync-svg-regression")
+            .join(uuid::Uuid::new_v4().to_string());
+        let store = Store::open(root).unwrap();
+        store.init_sync().unwrap();
+        let before = store.read().unwrap();
+        let demos: Vec<_> = before["assets"].as_array().unwrap().iter()
+            .filter(|asset| asset["demo"] == true && text(asset, "mime") == "image/svg+xml")
+            .cloned().collect();
+        assert!(!demos.is_empty());
+        let mut svg = store.save_svg(br#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><rect width="4" height="4" fill="red"/></svg>"#, "real.svg").unwrap();
+        let expected_preview = svg["thumbnailPath"].clone();
+        svg["thumbnailPath"] = json!("remote-preview-not-present.png");
+        store.connection.lock().unwrap().execute(
+            "INSERT INTO sync_local VALUES(1,?1,?2)",
+            params![serde_json::to_string(&Config::default()).unwrap(), serde_json::to_string(&ClientState::default()).unwrap()],
+        ).unwrap();
+        let doc = store.finish_sync(Exchange {
+            sent: vec![], accepted: vec![],
+            remote: vec![studio_sync::Record { key: format!("assets/{}", text(&svg, "id")), revision: 1, value: Some(svg.clone()) }],
+            server_id: "server".into(), cursor: 1, uploaded: 0, downloaded: 1,
+        }).unwrap();
+        for demo in demos {
+            assert!(doc["assets"].as_array().unwrap().contains(&demo));
+        }
+        let merged = doc["assets"].as_array().unwrap().iter().find(|asset| asset["id"] == svg["id"]).unwrap();
+        assert_eq!(merged["thumbnailPath"], expected_preview);
+        assert_eq!(store.sync_saved().unwrap().1.cursor, 1);
+    }
     #[test]
     fn sync_state_and_document_commit_together_without_replacing_settings_or_usage() {
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))

@@ -19,9 +19,80 @@ pub struct GenerationRequest {
     pub reference_ids: Vec<String>,
     pub size: String,
     pub quality: String,
+    #[serde(default)]
+    pub complexity: Option<String>,
+    #[serde(default)]
+    pub moderation: Option<String>,
+    #[serde(default)]
+    pub background: Option<String>,
+    #[serde(default)]
+    pub output_format: Option<String>,
+    #[serde(default)]
+    pub output_compression: Option<u8>,
+    #[serde(default)]
+    pub image_count: Option<u8>,
+    #[serde(default)]
+    pub frame_count: Option<u8>,
+    #[serde(default)]
+    pub frame_duration_ms: Option<u16>,
     pub context_mode: String,
     #[serde(default)]
     pub image_selection: Option<Value>,
+}
+
+fn image_extra_options(model: &str, request: &GenerationRequest) -> Result<serde_json::Map<String, Value>> {
+    let model = model.rsplit('/').next().unwrap_or(model).to_ascii_lowercase();
+    let is_image = model.starts_with("gpt-image-");
+    let is_26 = model == "gpt-image-2.6" || model.starts_with("gpt-image-2.6-");
+    let mut options = serde_json::Map::new();
+    for (key, value, allowed, supported) in [
+        ("complexity", request.complexity.as_deref(), &["low", "medium", "high"][..], is_26),
+        ("moderation", request.moderation.as_deref(), &["low"][..], is_image),
+        ("background", request.background.as_deref(), &["opaque", "transparent"][..], is_image),
+    ] {
+        if let Some(value) = value.filter(|value| *value != "auto") {
+            if !supported || !allowed.contains(&value) {
+                return Err(format!("此图像模型不支持所选{key}选项"));
+            }
+            options.insert(key.into(), json!(value));
+        }
+    }
+    Ok(options)
+}
+
+pub fn validate_generation_options(model: &str, api_mode: &str, request: &GenerationRequest) -> Result<()> {
+    validate_image_options(model, &request.size, &request.quality)?;
+    image_extra_options(model, request)?;
+    let format = request.output_format.as_deref().unwrap_or("png");
+    let is_image = model.rsplit('/').next().unwrap_or(model).to_ascii_lowercase().starts_with("gpt-image-");
+    let model_name = model.rsplit('/').next().unwrap_or(model).to_ascii_lowercase();
+    let is_26 = model_name == "gpt-image-2.6" || model_name.starts_with("gpt-image-2.6-");
+    if !["png", "jpeg", "webp", "gif", "svg"].contains(&format) || (format != "png" && !is_image) || (["gif", "svg"].contains(&format) && !is_26) {
+        return Err("此图像模型不支持所选输出格式".into());
+    }
+    if request.background.as_deref() == Some("transparent") && !["png", "webp"].contains(&format) {
+        return Err("透明背景需要 PNG 或 WebP 格式".into());
+    }
+    if let Some(compression) = request.output_compression {
+        if compression > 100 || !["jpeg", "webp"].contains(&format) {
+            return Err("压缩率只能用于 JPEG 或 WebP，范围为 0–100".into());
+        }
+    }
+    let count = request.image_count.unwrap_or(1);
+    if !(1..=10).contains(&count) || (api_mode == "responses" && count != 1) {
+        return Err("图片数量无效；Responses 模式仅支持一张".into());
+    }
+    if format == "svg" && (count != 1 || !request.reference_ids.is_empty() || request.context_mode == "continue") {
+        return Err("SVG 仅支持独立文生图且生成数量为 1，不支持参考图或接续编辑".into());
+    }
+    if format == "gif" {
+        if request.frame_count.is_some_and(|n| !(2..=16).contains(&n)) || request.frame_duration_ms.is_some_and(|n| !(20..=2000).contains(&n)) {
+            return Err("GIF 帧数须为 2–16，每帧时长须为 20–2000 毫秒".into());
+        }
+    } else if request.frame_count.is_some() || request.frame_duration_ms.is_some() {
+        return Err("帧数和帧时长仅适用于 GIF".into());
+    }
+    Ok(())
 }
 pub struct GeneratedImage {
     pub bytes: Vec<u8>,
@@ -39,9 +110,10 @@ pub fn validate_image_options(model: &str, size: &str, quality: &str) -> Result<
         .unwrap_or(model)
         .to_ascii_lowercase();
     let v25 = model == "gpt-image-2.5" || model.starts_with("gpt-image-2.5-");
+    let v26 = model == "gpt-image-2.6" || model.starts_with("gpt-image-2.6-");
     let flexible = v25 || model == "gpt-image-2" || model.starts_with("gpt-image-2-");
     if !["auto", "low", "medium", "high"].contains(&quality)
-        && !(v25 && ["xhigh", "max"].contains(&quality))
+        && !((v25 || v26) && ["xhigh", "max"].contains(&quality))
     {
         return Err("此图像模型不支持所选质量".into());
     }
@@ -266,6 +338,9 @@ fn image_data(
     ids.iter()
         .map(|id| {
             let asset = find(doc, "assets", id)?;
+            if text(asset, "mime") == "image/svg+xml" {
+                return Err("SVG 不能作为图片编辑参考图，请先导出并转换为 PNG 或 WebP".into());
+            }
             let bytes = fs::read(store.asset_path(asset)?).map_err(|e| e.to_string())?;
             total += bytes.len();
             if total > 50 * 1024 * 1024 {
@@ -332,7 +407,8 @@ pub async fn generate(
     if request.prompt.trim().is_empty() {
         return Err("请先输入 Prompt".into());
     }
-    validate_image_options(text(settings, "model"), &request.size, &request.quality)?;
+    validate_generation_options(text(settings, "model"), text(settings, "apiMode"), request)?;
+    let extra_options = image_extra_options(text(settings, "model"), request)?;
     let references = image_data(store, doc, &request.reference_ids)?;
     let is_responses = text(settings, "apiMode") == "responses";
     let mut call = Invocation::new(
@@ -345,12 +421,17 @@ pub async fn generate(
     if is_responses {
         call.image_model = Some(providers::model(&doc["settings"], "image")?.clone());
     }
+    call.output_format = request.output_format.clone();
     let response = if is_responses {
         let mut content = vec![json!({"type":"input_text","text":request.prompt})];
         for (bytes, mime, _) in &references {
             content.push(json!({"type":"input_image","image_url":format!("data:{mime};base64,{}",STANDARD.encode(bytes))}));
         }
-        let mut body = json!({"model":settings["mainModel"],"input":[{"role":"user","content":content}],"tools":[{"type":"image_generation","model":settings["model"],"size":request.size,"quality":request.quality,"output_format":"png"}],"tool_choice":{"type":"image_generation"}});
+        let mut body = json!({"model":settings["mainModel"],"input":[{"role":"user","content":content}],"tools":[{"type":"image_generation","model":settings["model"],"size":request.size,"quality":request.quality,"output_format":request.output_format.as_deref().unwrap_or("png")}],"tool_choice":{"type":"image_generation"}});
+        body["tools"][0].as_object_mut().unwrap().extend(extra_options.clone());
+        if let Some(compression) = request.output_compression { body["tools"][0]["output_compression"] = json!(compression); }
+        if let Some(count) = request.frame_count { body["tools"][0]["frame_count"] = json!(count); }
+        if let Some(duration) = request.frame_duration_ms { body["tools"][0]["frame_duration_ms"] = json!(duration); }
         if let Some(previous_id) = previous_response_id(doc, request)? {
             body["previous_response_id"] = json!(previous_id);
         }
@@ -364,14 +445,26 @@ pub async fn generate(
         .send()
         .await
     } else if references.is_empty() {
-        session_header(client.post(format!("{url}/images/generations")),host,&request.session_id).bearer_auth(&key).json(&json!({"model":settings["model"],"prompt":request.prompt,"size":request.size,"quality":request.quality,"n":1,"output_format":"png"})).send().await
+        let mut body = json!({"model":settings["model"],"prompt":request.prompt,"size":request.size,"quality":request.quality,"n":request.image_count.unwrap_or(1),"output_format":request.output_format.as_deref().unwrap_or("png")});
+        body.as_object_mut().unwrap().extend(extra_options.clone());
+        if let Some(compression) = request.output_compression { body["output_compression"] = json!(compression); }
+        if let Some(count) = request.frame_count { body["frame_count"] = json!(count); }
+        if let Some(duration) = request.frame_duration_ms { body["frame_duration_ms"] = json!(duration); }
+        session_header(client.post(format!("{url}/images/generations")),host,&request.session_id).bearer_auth(&key).json(&body).send().await
     } else {
         let mut form = multipart::Form::new()
             .text("model", text(settings, "model").to_owned())
             .text("prompt", request.prompt.clone())
             .text("size", request.size.clone())
             .text("quality", request.quality.clone())
-            .text("n", "1");
+            .text("n", request.image_count.unwrap_or(1).to_string())
+            .text("output_format", request.output_format.as_deref().unwrap_or("png").to_owned());
+        if let Some(compression) = request.output_compression { form = form.text("output_compression", compression.to_string()); }
+        if let Some(count) = request.frame_count { form = form.text("frame_count", count.to_string()); }
+        if let Some(duration) = request.frame_duration_ms { form = form.text("frame_duration_ms", duration.to_string()); }
+        for (key, value) in extra_options {
+            form = form.text(key, value.as_str().unwrap().to_owned());
+        }
         for (bytes, mime, name) in references {
             let part = multipart::Part::bytes(bytes)
                 .file_name(name)
@@ -689,6 +782,14 @@ mod tests {
             reference_ids: vec![],
             size: "1024x1024".into(),
             quality: "low".into(),
+            complexity: None,
+            moderation: None,
+            background: None,
+            output_format: None,
+            output_compression: None,
+            image_count: None,
+            frame_count: None,
+            frame_duration_ms: None,
             context_mode: "continue".into(),
             image_selection: None,
         };
@@ -726,6 +827,9 @@ mod tests {
     #[test]
     fn image_options_follow_model_specific_limits() {
         assert!(validate_image_options("gpt-image-2.5-sunburst", "3840x2160", "max").is_ok());
+        assert!(validate_image_options("gpt-image-2.6-sunburst", "1024x1024", "max").is_ok());
+        assert!(validate_image_options("openai/gpt-image-2.6-flare", "auto", "xhigh").is_ok());
+        assert!(validate_image_options("gpt-image-2.6-flare", "1536x864", "high").is_err());
         assert!(validate_image_options("openai/gpt-image-2.5-flare", "1536x864", "xhigh").is_ok());
         for size in ["3840x3840", "512x512", "1025x1024", "4096x2048", "400x2000"] {
             assert!(
@@ -735,5 +839,70 @@ mod tests {
         }
         assert!(validate_image_options("gpt-image-2", "2048x2048", "xhigh").is_err());
         assert!(validate_image_options("gpt-image-1.5", "1536x864", "high").is_err());
+    }
+    #[test]
+    fn image_extra_options_validate_and_preserve_defaults() {
+        let (_, mut request) = selection_fixture();
+        assert!(image_extra_options("gpt-image-2.6-sunburst", &request).unwrap().is_empty());
+        request.complexity = Some("medium".into());
+        request.moderation = Some("low".into());
+        request.background = Some("transparent".into());
+        let expected = json!({"complexity":"medium","moderation":"low","background":"transparent"});
+        assert_eq!(json!(image_extra_options("openai/gpt-image-2.6-flare", &request).unwrap()), expected);
+        assert!(image_extra_options("gpt-image-2.5-flare", &request).is_err());
+        request.complexity = Some("auto".into());
+        assert_eq!(json!(image_extra_options("gpt-image-2.5-flare", &request).unwrap()), json!({"moderation":"low","background":"transparent"}));
+        request.background = Some("invalid".into());
+        assert!(image_extra_options("gpt-image-2.6-sunburst", &request).is_err());
+    }
+    #[test]
+    fn output_options_validate_format_compression_and_api_count() {
+        let (_, mut request) = selection_fixture();
+        let model = "gpt-image-2.6-sunburst";
+        assert!(validate_generation_options(model, "responses", &request).is_ok());
+        request.output_format = Some("webp".into());
+        request.output_compression = Some(0);
+        request.background = Some("transparent".into());
+        assert!(validate_generation_options(model, "responses", &request).is_ok());
+        request.image_count = Some(3);
+        assert!(validate_generation_options(model, "images", &request).is_ok());
+        assert!(validate_generation_options(model, "responses", &request).is_err());
+        request.output_format = Some("jpeg".into());
+        assert!(validate_generation_options(model, "images", &request).is_err());
+        request.background = Some("auto".into());
+        assert!(validate_generation_options(model, "images", &request).is_ok());
+        request.output_compression = Some(101);
+        assert!(validate_generation_options(model, "images", &request).is_err());
+        request.output_compression = Some(50);
+        request.output_format = Some("png".into());
+        assert!(validate_generation_options(model, "images", &request).is_err());
+        request.output_compression = None;
+        request.image_count = Some(11);
+        assert!(validate_generation_options(model, "images", &request).is_err());
+    }
+    #[test]
+    fn gif_and_svg_requests_enforce_model_and_format_constraints() {
+        let (_, mut request) = selection_fixture();
+        let model = "gpt-image-2.6-flare";
+        request.output_format = Some("gif".into());
+        request.frame_count = Some(9);
+        request.frame_duration_ms = Some(200);
+        assert!(validate_generation_options(model, "images", &request).is_ok());
+        assert!(validate_generation_options(model, "responses", &request).is_ok());
+        assert!(validate_generation_options("gpt-image-2.5-flare", "images", &request).is_err());
+        request.frame_count = Some(17);
+        assert!(validate_generation_options(model, "images", &request).is_err());
+        request.frame_count = None;
+        request.frame_duration_ms = None;
+        request.output_format = Some("svg".into());
+        assert!(validate_generation_options(model, "images", &request).is_ok());
+        request.reference_ids.push("image".into());
+        assert!(validate_generation_options(model, "images", &request).is_err());
+        request.reference_ids.clear();
+        request.context_mode = "continue".into();
+        assert!(validate_generation_options(model, "responses", &request).is_err());
+        request.context_mode = "new".into();
+        request.image_count = Some(2);
+        assert!(validate_generation_options(model, "images", &request).is_err());
     }
 }

@@ -33,6 +33,7 @@ pub struct Invocation {
     pub provider: Value,
     pub model: Value,
     pub image_model: Option<Value>,
+    pub output_format: Option<String>,
     pub protocol: String,
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub device_id: String,
@@ -54,6 +55,7 @@ impl Invocation {
             provider: providers::provider_for(settings, role)?.clone(),
             model,
             image_model: None,
+            output_format: None,
             protocol: protocol.into(),
             started_at: chrono::Utc::now(),
             device_id: text(doc, "installationId").into(),
@@ -116,6 +118,17 @@ impl Invocation {
                 }
             }
         }
+        if self.output_format.as_deref() == Some("svg") {
+            let svg_usage = if response["svg_usage"].is_object() {
+                &response["svg_usage"]
+            } else {
+                response["output"].as_array().into_iter().flatten()
+                    .find_map(|item| item.get("svg_usage").filter(|v| v.is_object()))
+                    .unwrap_or(&Value::Null)
+            };
+            let author = json!({"id": svg_usage["model"].as_str().unwrap_or("svg-author")});
+            components.push(component(&author, svg_usage, false, false, &Value::Null));
+        }
         let all_priced = components.iter().all(|c| c["estimatedCostUsd"].is_string());
         let known = components
             .iter()
@@ -175,7 +188,7 @@ fn pricing(model: &Value, image: bool, service_tier: &Value, input_tokens: Optio
         return json!({"source":"provider_config","rates":model["pricing"],"currency":"USD","unit":"per_million_tokens"});
     }
     let name = text(model, "id").rsplit('/').next().unwrap_or("");
-    let mut rates = if image && (name == "gpt-image-2.5-sunburst" || name == "gpt-image-2.5-flare")
+    let mut rates = if image && ["gpt-image-2.5-sunburst", "gpt-image-2.5-flare", "gpt-image-2.6-sunburst", "gpt-image-2.6-flare"].contains(&name)
     {
         json!({"input":"5","cachedInput":"1.25","imageInput":"8","cachedImageInput":"2","output":"30"})
     } else if !image
@@ -217,7 +230,7 @@ fn pricing(model: &Value, image: bool, service_tier: &Value, input_tokens: Optio
     if rates.is_null() {
         Value::Null
     } else {
-        json!({"source":"openai_reference","asOf":PRICING_DATE,"sourceUrl":"https://developers.openai.com/api/docs/pricing","currency":"USD","unit":"per_million_tokens","serviceTier":"standard","contextTier":if long_context{"long"}else{"short"},"rates":rates})
+        json!({"source":"openai_reference","asOf":if image && ["gpt-image-2.6-sunburst", "gpt-image-2.6-flare"].contains(&name) {"2026-11-07"} else {PRICING_DATE},"sourceUrl":"https://developers.openai.com/api/docs/pricing","currency":"USD","unit":"per_million_tokens","serviceTier":"standard","contextTier":if long_context{"long"}else{"short"},"rates":rates})
     }
 }
 fn cost_part(tokens: u64, rates: &Value, key: &str) -> Option<Decimal> {
@@ -402,6 +415,17 @@ mod tests {
         );
     }
     #[test]
+    fn image_26_models_use_official_multimodal_rates() {
+        for id in ["gpt-image-2.6-sunburst", "openai/gpt-image-2.6-flare"] {
+            let model = json!({"id": id});
+            let usage = json!({"input_tokens":1000,"input_tokens_details":{"text_tokens":200,"image_tokens":800},"output_tokens":100});
+            let result = component(&model, &usage, true, false, &Value::Null);
+            assert_eq!(result["estimatedCostUsd"], "0.0104");
+            assert_eq!(result["pricingSnapshot"]["asOf"], "2026-11-07");
+            assert_eq!(result["pricingSnapshot"]["rates"], json!({"input":"5","cachedInput":"1.25","imageInput":"8","cachedImageInput":"2","output":"30"}));
+        }
+    }
+    #[test]
     fn aggregate_tool_usage_wins_over_individual_tool_usage() {
         let i = Invocation {
             id: "event".into(),
@@ -410,6 +434,7 @@ mod tests {
             provider: json!({"id":"p"}),
             model: json!({"id":"gpt-6.1-sol"}),
             image_model: Some(json!({"id":"gpt-image-2.5-sunburst"})),
+            output_format: None,
             protocol: "responses".into(),
             started_at: chrono::Utc::now(),
             device_id: "device".into(),
@@ -418,6 +443,25 @@ mod tests {
         assert_eq!(e["components"].as_array().unwrap().len(), 2);
         assert_eq!(e["requestCount"], 1);
         assert_eq!(e["components"][1]["tokens"]["output"], 100);
+    }
+    #[test]
+    fn svg_authoring_usage_is_not_silently_omitted() {
+        let call = Invocation {
+            id: "svg-event".into(), session_id: "session".into(), operation: "image".into(),
+            provider: json!({"id":"p"}), model: json!({"id":"gpt-image-2.6-flare"}),
+            image_model: None, output_format: Some("svg".into()), protocol: "images".into(),
+            started_at: chrono::Utc::now(), device_id: "device".into(),
+        };
+        let usage = json!({"usage":{"input_tokens":10,"input_tokens_details":{"text_tokens":10,"image_tokens":0},"output_tokens":20}});
+        let missing = call.event(&usage, Some(200), None);
+        assert_eq!(missing["estimateStatus"], "incomplete");
+        assert!(missing["estimatedCostUsd"].is_null());
+        assert_eq!(missing["components"].as_array().unwrap().len(), 2);
+        let mut reported = usage;
+        reported["svg_usage"] = json!({"model":"unknown-author","input_tokens":10,"output_tokens":20});
+        let event = call.event(&reported, Some(200), None);
+        assert_eq!(event["components"][1]["model"], "unknown-author");
+        assert_eq!(event["estimateStatus"], "incomplete");
     }
 
     #[test]

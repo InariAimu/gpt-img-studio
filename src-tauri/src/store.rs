@@ -415,6 +415,38 @@ impl Store {
             json!({"id":hash,"title":name,"path":relative,"thumbnailPath":thumbnail,"mime":mime,"width":width,"height":height,"createdAt":now(),"workspaceId":"","sessionId":"","originalPrompt":"","submittedPrompt":"","referenceIds":[],"model":"本地导入","size":format!("{width}x{height}"),"quality":"original","groupId":hash,"favorite":false,"isReference":false,"demo":false}),
         )
     }
+    pub fn save_svg(&self, bytes: &[u8], name: &str) -> Result<Value> {
+        let (width, height, preview) = crate::svg::render(bytes)?;
+        let hash = format!("{:x}", Sha256::digest(bytes));
+        let relative = format!("assets/{hash}.svg");
+        let thumbnail = format!("thumbnails/{hash}.png");
+        let path = self.root.join(&relative);
+        match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => { file.write_all(bytes).map_err(|e| e.to_string())?; file.sync_all().map_err(|e| e.to_string())?; }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let existing = fs::read(&path).map_err(|e| e.to_string())?;
+                if Sha256::digest(&existing) != Sha256::digest(bytes) { return Err("SVG 原图校验失败".into()); }
+            }
+            Err(e) => return Err(format!("无法保存 SVG：{e}")),
+        }
+        if !self.root.join(&thumbnail).exists() {
+            fs::write(self.root.join(&thumbnail), preview).map_err(|e| format!("无法保存 SVG 预览：{e}"))?;
+        }
+        Ok(json!({"id":hash,"title":name,"path":relative,"thumbnailPath":thumbnail,"mime":"image/svg+xml","width":width,"height":height,"createdAt":now(),"workspaceId":"","sessionId":"","originalPrompt":"","submittedPrompt":"","referenceIds":[],"model":"本地导入","size":format!("{width}x{height}"),"quality":"original","groupId":hash,"favorite":false,"isReference":false,"demo":false}))
+    }
+    pub fn ensure_svg_preview(&self, asset: &Value) -> Result<String> {
+        let path = self.asset_path(asset)?;
+        let bytes = fs::read(path).map_err(|e| format!("无法读取 SVG：{e}"))?;
+        let hash = format!("{:x}", Sha256::digest(&bytes));
+        let expected = format!("assets/{hash}.svg");
+        if text(asset, "path") != expected { return Err("SVG 原图校验失败".into()); }
+        let thumbnail = format!("thumbnails/{hash}.png");
+        if !self.root.join(&thumbnail).exists() {
+            let (_, _, preview) = crate::svg::render(&bytes)?;
+            fs::write(self.root.join(&thumbnail), preview).map_err(|e| format!("无法保存 SVG 预览：{e}"))?;
+        }
+        Ok(thumbnail)
+    }
 }
 
 pub fn new_session(workspace_id: &str, title: &str) -> Value {
@@ -570,7 +602,7 @@ pub fn apply_action(doc: &mut Value, action: &Value) -> Result<()> {
                 session["referenceIds"] = json!(references);
                 session["titleSource"] = json!("default");
                 if !text(asset,"sessionId").is_empty() { session["parentSessionId"] = asset["sessionId"].clone(); }
-                for key in ["size", "quality"] {
+                for key in ["size", "quality", "complexity", "moderation", "background", "outputFormat", "outputCompression", "imageCount", "frameCount", "frameDurationMs"] {
                     if !text(asset,key).is_empty() { session[key] = asset[key].clone(); }
                 }
                 let selection = doc["jobs"].as_array().into_iter().flatten()
@@ -609,6 +641,14 @@ pub fn apply_action(doc: &mut Value, action: &Value) -> Result<()> {
                 "title",
                 "size",
                 "quality",
+                "complexity",
+                "moderation",
+                "background",
+                "outputFormat",
+                "outputCompression",
+                "imageCount",
+                "frameCount",
+                "frameDurationMs",
                 "imageSelection",
             ] {
                 if let Some(value) = action.get(key) {
@@ -681,6 +721,12 @@ mod tests {
         doc["assets"][0]["referenceIds"] = json!(["demo-botanic","demo-mountain"]);
         doc["assets"][0]["size"] = json!("1536x1024");
         doc["assets"][0]["quality"] = json!("medium");
+        doc["assets"][0]["complexity"] = json!("low");
+        doc["assets"][0]["moderation"] = json!("low");
+        doc["assets"][0]["background"] = json!("transparent");
+        doc["assets"][0]["outputFormat"] = json!("webp");
+        doc["assets"][0]["outputCompression"] = json!("0");
+        doc["assets"][0]["imageCount"] = json!("3");
         doc["assets"][0]["model"] = json!("original-image-model");
         doc["assets"][0]["providerBaseUrl"] = json!("https://original.example/v1");
         doc["assets"][0]["demo"] = json!(false);
@@ -705,6 +751,12 @@ mod tests {
         assert_eq!(copy["referenceIds"],json!(["demo-botanic","demo-mountain"]));
         assert_eq!(copy["size"],"1536x1024");
         assert_eq!(copy["quality"],"medium");
+        assert_eq!(copy["complexity"],"low");
+        assert_eq!(copy["moderation"],"low");
+        assert_eq!(copy["background"],"transparent");
+        assert_eq!(copy["outputFormat"],"webp");
+        assert_eq!(copy["outputCompression"],"0");
+        assert_eq!(copy["imageCount"],"3");
         assert_eq!(copy["imageSelection"],before["jobs"][0]["imageSelection"]);
         assert_eq!(copy["contextMode"],"new");
         assert_eq!(copy["titleSource"],"default");
@@ -1208,6 +1260,39 @@ mod tests {
         drop(store);
         let reopened = Store::open(directory.path().to_owned()).unwrap();
         assert!(find(&reopened.read().unwrap(), "assets", text(&asset, "id")).is_ok());
+    }
+    #[test]
+    fn generated_svg_and_animated_gif_are_saved_with_previews() {
+        use image::AnimationDecoder;
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../output/gif-svg-validation").join(id());
+        let store = Store::open(root).unwrap();
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="16"><rect width="32" height="16" fill="red"/></svg>"#;
+        let asset = store.save_svg(svg, "vector").unwrap();
+        assert_eq!(fs::read(store.asset_path(&asset).unwrap()).unwrap(), svg);
+        assert_eq!(asset["mime"], "image/svg+xml");
+        assert!(studio_sync::blob_name(text(&asset, "path")).is_ok());
+        assert!(studio_sync::validate_entity(&format!("assets/{}", text(&asset, "id")), &Some(asset.clone())).is_ok());
+        assert_eq!(asset["width"], 32);
+        assert!(store.root.join(text(&asset, "thumbnailPath")).is_file());
+        assert_eq!(store.ensure_svg_preview(&asset).unwrap(), text(&asset, "thumbnailPath"));
+        let second = Store::open(store.root.join("second-device")).unwrap();
+        fs::write(second.root.join(text(&asset, "path")), svg).unwrap();
+        let preview = second.ensure_svg_preview(&asset).unwrap();
+        assert!(second.root.join(preview).is_file());
+
+        let mut gif = Vec::new();
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(&mut gif);
+            for color in [[255,0,0,255], [0,0,255,255]] {
+                encoder.encode_frame(image::Frame::new(image::RgbaImage::from_pixel(2, 2, image::Rgba(color)))).unwrap();
+            }
+        }
+        let animation = store.save_image(&gif, "animation").unwrap();
+        let saved = fs::read(store.asset_path(&animation).unwrap()).unwrap();
+        assert_eq!(saved, gif);
+        let decoder = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(saved)).unwrap();
+        assert_eq!(decoder.into_frames().collect_frames().unwrap().len(), 2);
+        assert!(store.root.join(text(&animation, "thumbnailPath")).is_file());
     }
     #[test]
     fn failed_action_does_not_replace_saved_document() {

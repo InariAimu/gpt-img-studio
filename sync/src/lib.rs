@@ -91,7 +91,7 @@ pub fn blob_name(path: &str) -> Result<&str> {
         .strip_prefix("assets/")
         .ok_or("图片路径必须位于 assets/")?;
     let (digest, ext) = name.split_once('.').ok_or("图片路径缺少扩展名")?;
-    if !valid_hash(digest) || !["png", "jpg", "jpeg", "webp", "gif"].contains(&ext) {
+    if !valid_hash(digest) || !["png", "jpg", "jpeg", "webp", "gif", "svg"].contains(&ext) {
         return Err("无效的图片哈希路径".into());
     }
     Ok(name)
@@ -106,7 +106,10 @@ pub fn validate_entity(key: &str, value: &Option<Value>) -> Result<()> {
             return Err("同步记录格式错误或过大".into());
         }
         if collection == "assets" {
-            blob_name(v["path"].as_str().ok_or("缺少原图路径")?)?;
+            let name = blob_name(v["path"].as_str().ok_or("缺少原图路径")?)?;
+            if name.ends_with(".svg") != (v["mime"].as_str() == Some("image/svg+xml")) {
+                return Err("SVG 图片类型与文件扩展名不一致".into());
+            }
         }
         if collection == "providers" {
             let url = reqwest::Url::parse(v["baseUrl"].as_str().unwrap_or(""))

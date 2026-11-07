@@ -247,8 +247,9 @@ export function useStudio() {
   }, [requireDesktop, accept]);
   const imageUrl = useCallback((asset: Asset, thumbnail = false) => {
     if (asset.demo) return asset.path;
+    if (asset.mime === 'image/svg+xml' && !asset.thumbnailPath) return '';
     if (!boot.dataDir) return '';
-    return convertFileSrc(`${boot.dataDir.replace(/[\\/]$/, '')}/${thumbnail && asset.thumbnailPath ? asset.thumbnailPath : asset.path}`);
+    return convertFileSrc(`${boot.dataDir.replace(/[\\/]$/, '')}/${(thumbnail || asset.mime === 'image/svg+xml') && asset.thumbnailPath ? asset.thumbnailPath : asset.path}`);
   }, [boot.dataDir]);
   const generationStartedAt = (job?: Job) => {
     if (!job) return undefined;

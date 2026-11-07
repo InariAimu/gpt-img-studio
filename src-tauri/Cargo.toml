@@ -33,6 +33,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 keyring = { version = "3", features = ["windows-native"] }
 rust_decimal = "1"
 studio-sync = { path = "../sync" }
+resvg = { version = "=0.45.1", default-features = false, features = ["text", "system-fonts"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "=0.62.2", features = ["Win32_System_Com", "Win32_UI_Shell"] }

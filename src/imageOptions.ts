@@ -19,8 +19,8 @@ export const qualityOptions = [
   { value: 'medium', label: '标准' }, { value: 'high', label: '高' },
   { value: 'xhigh', label: '超高' }, { value: 'max', label: '最高' },
 ];
-export function flexibleSizes(model: string) { return /(?:^|\/)gpt-image-2(?:\.|-|$)/i.test(model); }
-export function availableQualities(model: string) { return /(?:^|\/)gpt-image-2\.5(?:-|$)/i.test(model) ? qualityOptions : qualityOptions.slice(0, 4); }
+export function flexibleSizes(model: string) { return /(?:^|\/)gpt-image-2(?:\.5)?(?:-|$)/i.test(model); }
+export function availableQualities(model: string) { return /(?:^|\/)gpt-image-2\.[56](?:-|$)/i.test(model) ? qualityOptions : qualityOptions.slice(0, 4); }
 export function validateImageSize(size: string, model: string): string | null {
   if (standardSizes.some(option => option.value === size)) return null;
   if (!flexibleSizes(model)) return '此模型仅提供自动、方图、横图和竖图尺寸。';
