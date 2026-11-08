@@ -647,6 +647,22 @@ kbd {font:var(--font-size-min) 'Segoe UI',sans-serif;color:var(--text-3);border:
 .toast {display:flex;gap:8px;align-items:center;background:var(--bg);color:var(--text);border:1px solid var(--line-strong);box-shadow:0 4px 18px #0001;border-radius:8px;padding:11px 15px;max-width:620px;font-size:var(--font-size-min);overflow-wrap:anywhere;}
 .toast>svg {width:16px;height:16px;color:var(--success);flex-shrink:0;}
 .toast.error>svg {color:var(--danger);}
+.toast {pointer-events:auto;}
+.api-error {min-width:0;font-size:var(--font-size-min);overflow-wrap:anywhere;}
+.api-error p {margin:5px 0;}
+.api-error-message {color:var(--danger);font-weight:600;}
+.api-error-suggestion {color:var(--text-2);line-height:1.6;}
+.api-error-details {margin-top:10px;}
+.api-error-details>summary {cursor:pointer;color:var(--text-2);}
+.api-error-details dl {display:grid;gap:6px;margin:12px 0;}
+.api-error-details dl>div {display:grid;grid-template-columns:90px minmax(0,1fr);gap:10px;}
+.api-error-details dt {color:var(--text-3);}
+.api-error-details dd {margin:0;white-space:pre-wrap;user-select:text;}
+.api-error-raw-heading {display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px;color:var(--text-3);}
+.api-error-details pre {max-height:280px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;padding:12px;background:var(--bg);border:1px solid var(--line);border-radius:6px;user-select:text;font-size:12px;line-height:1.6;}
+.api-error-modal {width:min(760px,calc(100vw - 48px));}
+.api-error-modal>.api-error {padding:0 24px 24px;}
+.session-api-error {margin:10px 26px;flex-shrink:0;max-height:40vh;overflow:auto;}
 .spin {animation:spin 1s linear infinite;}
 @keyframes spin {to {transform:rotate(360deg);}}
 @keyframes indeterminate {from {transform:translateX(-110%);}to {transform:translateX(450%);}}

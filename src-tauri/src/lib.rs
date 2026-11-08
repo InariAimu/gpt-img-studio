@@ -1,3 +1,4 @@
+mod api_error;
 mod network;
 mod provider;
 mod providers;
@@ -503,7 +504,9 @@ async fn generate(
                         assets.push(asset);
                     }
                     Err(e) => {
-                        error = Some(e);
+                        let mut context = output.context.clone();
+                        context.stage = "校验或保存生成图片".into();
+                        error = Some(context.failure("image_save_failed", "服务已返回图片，但本地校验或保存失败", "请查看原始错误，检查返回格式、图片大小及本地磁盘；服务可能已计费，勿立即重复生成。", &json!(e)).encoded(""));
                         break;
                     }
                 }

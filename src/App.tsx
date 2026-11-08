@@ -1,4 +1,5 @@
 import { OptionSelect } from './OptionSelect';
+import ErrorDetails from './ErrorDetails';
 import { useEffect, useMemo, useState } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { ArrowDownToLine, ArrowUpRight, Check, CircleAlert, CircleCheck, Clock3, Columns3, FolderInput, Heart, ImagePlus, Images, Layers, ListChecks, LoaderCircle, Maximize2, Minimize2, Minus, Moon, Pencil, Plus, Search, Settings2, SlidersHorizontal, Sun, Trash2, WandSparkles, X } from 'lucide-react';
@@ -178,7 +179,8 @@ export default function App() {
         {page === 'settings' && <Settings studio={studio} tab={settingsTab} setTab={setSettingsTab} />}
       </>}
     </main>
-    <div className="toast-container" aria-live="polite">{studio.toasts.map(toast => <div className={`toast ${toast.error ? 'error' : ''}`} key={toast.id}>{toast.error ? <CircleAlert /> : <Check />}<span>{toast.message}</span></div>)}</div>
+    {studio.apiError && <Modal title="API 请求未完成" className="api-error-modal" onClose={() => studio.setApiError(null)}><ErrorDetails error={studio.apiError} /></Modal>}
+    <div className="toast-container" aria-live="polite">{studio.toasts.map(toast => <div className={`toast ${toast.error ? 'error' : ''}`} key={toast.id}>{toast.error ? <CircleAlert /> : <Check />}<span>{toast.message}</span>{toast.detail && <button className="button ghost small" onClick={() => studio.setApiError(toast.detail!)}>查看详情</button>}</div>)}</div>
     {lightbox && <Lightbox asset={lightbox} document={lightboxScope===null?doc:{...doc,assets:messageReferences(doc.assets,lightboxScope)}} imageUrl={studio.imageUrl} onClose={()=>{setLightboxId(null);setLightboxScope(null);}} onSelect={setLightboxId} onExport={() => void studio.exportImage(lightbox).catch(studio.report)} />}
     {dialog?.kind==='move'&&<SessionMoveDialog studio={studio} sessionId={dialog.sessionId} onClose={()=>setDialog(null)} onMoved={(id,ws)=>{setSessionId(id);setWorkspaceId(ws);setPage('workspace');setDialog(null);}}/>}
     {dialog?.kind==='delete'&&<SessionDeleteDialog studio={studio} sessionId={dialog.sessionId} onClose={()=>setDialog(null)} onDeleted={ws=>{setSessionId('');setWorkspaceId(ws);setSelectedId(null);setPage('workspace-gallery');setDialog(null);}}/>}

@@ -6,15 +6,17 @@ import seed from './data/seed.json';
 import { SettingsWrites } from './settingsWrites';
 import { waitForGeneratedImages } from './GenerationElapsed';
 import { SYNC_INTERVAL_MS, type SyncView } from './syncState';
+import { apiErrorInfo, errorSummary } from './apiErrors';
 import type { Asset, Bootstrap, GalleryTask, GenerationRequest, Job, NetworkConfig, NetworkState, RefineResult, SessionDeletePreview, WorkspaceDeletePreview, Settings, StudioAction, StudioDocument, UsageSummary } from './types';
 
 export const desktop = isTauri();
-export interface Toast { id: number; message: string; error: boolean }
+export interface Toast { id: number; message: string; error: boolean; detail?: string }
 export function useStudio() {
   const [boot, setBoot] = useState<Bootstrap>({ document: seed as StudioDocument, dataDir: '', hasImageKey: false, hasRefineKey: false });
   const [ready, setReady] = useState(!desktop);
   const [loadError, setLoadError] = useState('');
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [apiError, setApiError] = useState<string | null>(null);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsError, setSettingsError] = useState('');
   const [sync, setSync] = useState<SyncView>();
@@ -30,7 +32,9 @@ export function useStudio() {
   const sessionEditors = useRef(new Map<string,(action:StudioAction)=>Promise<StudioDocument>>());
   const notify = useCallback((message: string, error = false) => {
     const id = ++serial.current;
-    setToasts(items => [...items.slice(-2), { id, message, error }]);
+    const detail = error && apiErrorInfo(message) ? message : undefined;
+    if (detail) setApiError(detail);
+    setToasts(items => [...items.slice(-2), { id, message: errorSummary(message), error, detail }]);
     window.setTimeout(() => setToasts(items => items.filter(item => item.id !== id)), error ? 8000 : 4500);
   }, []);
   if (!settingsWrites.current) settingsWrites.current = new SettingsWrites({
@@ -292,6 +296,6 @@ export function useStudio() {
   const exportUsage = useCallback(async () => { requireDesktop(); const destination=await save({title:'导出用量记录',defaultPath:'image-studio-usage.jsonl',filters:[{name:'JSON Lines',extensions:['jsonl']}]});if(destination){await invoke('export_usage',{destination});notify('用量日志已导出');} },[requireDesktop,notify]);
   const chooseDataDirectory = useCallback(async () => { requireDesktop(); return open({directory:true,multiple:false,title:'选择空的数据目录'}); },[requireDesktop]);
   const relocateData = useCallback(async (destination:string) => { requireDesktop(); await settingsWrites.current!.idle(); await invoke('relocate_data',{destination});notify('正在迁移数据并重启应用…'); },[requireDesktop,notify]);
-  return { ...boot, galleryTasks, galleryDraft, setGalleryDraft, requestGalleryImport, enqueueGalleryImport, controlGalleryImport, openGalleryPost, ready, loadError, toasts, settingsSaving, settingsError, sync, syncBusy, syncNow, refreshSync, notify, report, refresh, mutate, saveSettings, importImages, importClipboardImages, nameSession, exportImage, generate, generationStartedAt, refine, imageUrl, listModels, usageRecords, networkSettings, testNetworkSettings, exportUsage, chooseDataDirectory, relocateData, moveSession, registerSessionEditor, previewDeleteSession, deleteSession, previewDeleteWorkspace, deleteWorkspace, previewDeleteSessions, deleteSessions, moveSessions };
+  return { ...boot, apiError, setApiError, galleryTasks, galleryDraft, setGalleryDraft, requestGalleryImport, enqueueGalleryImport, controlGalleryImport, openGalleryPost, ready, loadError, toasts, settingsSaving, settingsError, sync, syncBusy, syncNow, refreshSync, notify, report, refresh, mutate, saveSettings, importImages, importClipboardImages, nameSession, exportImage, generate, generationStartedAt, refine, imageUrl, listModels, usageRecords, networkSettings, testNetworkSettings, exportUsage, chooseDataDirectory, relocateData, moveSession, registerSessionEditor, previewDeleteSession, deleteSession, previewDeleteWorkspace, deleteWorkspace, previewDeleteSessions, deleteSessions, moveSessions };
 }
 export type Studio = ReturnType<typeof useStudio>;
