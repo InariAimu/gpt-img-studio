@@ -507,6 +507,19 @@ pub fn insert_imports(
 
 pub fn apply_action(doc: &mut Value, action: &Value) -> Result<()> {
     match text(action, "type") {
+        "set_sessions_discarded" => {
+            let selected: Vec<String> = serde_json::from_value(action["sessionIds"].clone())
+                .map_err(|_| "所选会话列表无效")?;
+            let discarded = action["discarded"].as_bool().ok_or("废弃状态无效")?;
+            if selected.is_empty() { return Err("请先选择会话".into()); }
+            // Validate every ID before changing anything, including mixed batches.
+            for session_id in &selected { find(doc, "sessions", session_id)?; }
+            for session in list_mut(doc, "sessions")? {
+                if selected.iter().any(|id| id == text(session, "id")) {
+                    session["discarded"] = json!(discarded);
+                }
+            }
+        }
         "record_generation_elapsed" => {
             let elapsed = action["elapsedMs"].as_u64().ok_or("生成耗时无效")?;
             let job = list_mut(doc, "jobs")?.iter_mut()
@@ -700,6 +713,55 @@ pub fn apply_action(doc: &mut Value, action: &Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn discarded_sessions_are_atomic_persistent_reversible_and_syncable() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../output/prompt-discard-20261109/tests").join(id());
+        let store = Store::open(root.clone()).unwrap();
+        let before = store.read().unwrap();
+        let selected = json!([before["sessions"][0]["id"], before["sessions"][1]["id"]]);
+        let action = json!({"type":"set_sessions_discarded","sessionIds":selected,"discarded":true});
+        let saved = store.change(|doc| apply_action(doc, &action)).unwrap();
+        let mut expected = before.clone();
+        expected["revision"] = saved["revision"].clone();
+        expected["sessions"][0]["discarded"] = json!(true);
+        expected["sessions"][1]["discarded"] = json!(true);
+        assert_eq!(saved, expected); // Assets, references, prompts and other sessions stay intact.
+        for invalid in [
+            json!({"type":"set_sessions_discarded","sessionIds":[selected[0],"missing"],"discarded":false}),
+            json!({"type":"set_sessions_discarded","sessionIds":[],"discarded":false}),
+            json!({"type":"set_sessions_discarded","sessionIds":selected,"discarded":"false"}),
+            json!({"type":"set_sessions_discarded","sessionIds":[42],"discarded":true}),
+        ] {
+            let mut doc = saved.clone();
+            assert!(apply_action(&mut doc, &invalid).is_err());
+            assert_eq!(doc, saved);
+            assert!(store.change(|doc| apply_action(doc, &invalid)).is_err());
+            assert_eq!(store.read().unwrap(), saved);
+        }
+        drop(store);
+        let reopened = Store::open(root).unwrap();
+        assert_eq!(reopened.read().unwrap(), saved);
+        let mut remote = before.clone();
+        studio_sync::apply(&mut remote, &studio_sync::project(&saved));
+        assert_eq!(remote["sessions"], saved["sessions"]);
+        // A single-session restore works inside an otherwise discarded batch.
+        let restored = reopened.change(|doc| apply_action(doc, &json!({
+            "type":"set_sessions_discarded","sessionIds":[selected[0]],"discarded":false
+        }))).unwrap();
+        assert_eq!(restored["sessions"][0]["discarded"], false);
+        assert_eq!(restored["sessions"][1]["discarded"], true);
+        let restored = reopened.change(|doc| apply_action(doc, &json!({
+            "type":"set_sessions_discarded","sessionIds":selected,"discarded":false
+        }))).unwrap();
+        expected["revision"] = restored["revision"].clone();
+        expected["sessions"][0]["discarded"] = json!(false);
+        expected["sessions"][1]["discarded"] = json!(false);
+        assert_eq!(restored, expected);
+        let mut remote = saved;
+        studio_sync::apply(&mut remote, &studio_sync::project(&restored));
+        assert_eq!(remote["sessions"], restored["sessions"]);
+    }
     #[test]
     fn generation_elapsed_preserves_first_measurement_and_rejects_unfinished_jobs() {
         let mut doc = json!({"jobs":[{"id":"done","status":"completed"},{"id":"running","status":"running"}]});

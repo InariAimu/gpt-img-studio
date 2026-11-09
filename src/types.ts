@@ -23,6 +23,7 @@ export interface NetworkState {
 }
 export interface Workspace { id: string; name: string; createdAt: string; sortOrder?: number }
 export interface Session {
+  discarded?: boolean;
   id: string; workspaceId: string; title: string; draft: string; originalPrompt: string;
   referenceIds: string[]; contextMode: ContextMode; createdAt: string;
   parentSessionId?: string; parentAssetId?: string; lastResponseId?: string;

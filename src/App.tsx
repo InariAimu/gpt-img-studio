@@ -1,6 +1,7 @@
 import { OptionSelect } from './OptionSelect';
+import SessionDiscardButton from './SessionDiscardButton';
 import ErrorDetails from './ErrorDetails';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { ArrowDownToLine, ArrowUpRight, Check, CircleAlert, CircleCheck, Clock3, Columns3, FolderInput, Heart, ImagePlus, Images, Layers, ListChecks, LoaderCircle, Maximize2, Minimize2, Minus, Moon, Pencil, Plus, Search, Settings2, SlidersHorizontal, Sun, Trash2, WandSparkles, X } from 'lucide-react';
 import { AssetCard, AssetInspector, Empty, Modal, timeLabel } from './components';
@@ -24,8 +25,8 @@ import type { Asset, Page, StudioDocument, WorkspaceDeletePreview } from './type
 type DialogState = { kind: 'create' | 'workspace'; workspaceId?: string } | { kind: 'preset'; assetId: string } | {kind:'move';sessionId:string} | {kind:'delete';sessionId:string} | {kind:'rename-workspace';workspaceId:string} | {kind:'delete-workspace';workspaceId:string;preview:WorkspaceDeletePreview} | null;
 function isGeneratedAsset(asset:Asset){return !asset.demo&&!!asset.sessionId&&asset.model!=='本地导入'&&!asset.referenceOnly;}
 function readNavigation() { try { return JSON.parse(localStorage.getItem('image-studio.navigation') || '{}') as { page?: Page; sessionId?: string; workspaceId?: string }; } catch { return {}; } }
-function readGalleryView():{mode:'cards'|'wall';size:PreviewSize} {
-  try {const saved=JSON.parse(localStorage.getItem('image-studio.gallery-view')||'{}');return {mode:saved.mode==='wall'?'wall':'cards',size:saved.size==='large'||saved.size==='xlarge'?saved.size:'normal'};}catch{return {mode:'cards',size:'normal'};}
+function readGalleryView():{mode:'cards'|'wall';size:PreviewSize;showDiscarded:boolean} {
+  try {const saved=JSON.parse(localStorage.getItem('image-studio.gallery-view')||'{}');return {mode:saved.mode==='wall'?'wall':'cards',size:saved.size==='large'||saved.size==='xlarge'?saved.size:'normal',showDiscarded:saved.showDiscarded!==false};}catch{return {mode:'cards',size:'normal',showDiscarded:true};}
 }
 
 export default function App() {
@@ -44,6 +45,9 @@ export default function App() {
   const [galleryWorkspace, setGalleryWorkspace] = useState('all');
   const [stack, setStack] = useState(true);
   const [galleryView,setGalleryView]=useState(readGalleryView);
+  const galleryPanelRef=useRef<HTMLElement>(null);
+  const galleryReturn=useRef<{scope:string;scrollTop:number}|null>(null);
+  const pendingGalleryScroll=useRef(0);
   useEffect(()=>{try{localStorage.setItem('image-studio.gallery-view',JSON.stringify(galleryView));}catch{/* View preferences are optional. */}},[galleryView]);
   const [selecting,setSelecting]=useState(false);
   const [selectedSessions,setSelectedSessions]=useState<string[]>([]);
@@ -61,7 +65,7 @@ export default function App() {
   useEffect(()=>{if(page==='workspace-gallery'&&!currentWorkspace.id)setPage('gallery');},[page,currentWorkspace.id]);
   const galleryScopeId=workspaceGallery?currentWorkspace.id:null;
   useEffect(()=>{setSelecting(false);setSelectedSessions([]);},[page,galleryScopeId]);
-  useEffect(()=>{setSelectedSessions([]);},[query,filter]);
+  useEffect(()=>{setSelectedSessions([]);},[query,filter,galleryView.showDiscarded]);
   const selected = doc.assets.find(a => a.id === selectedId);
   const lightbox = doc.assets.find(a => a.id === lightboxId);
   const running = doc.jobs.filter(j => j.status === 'running').length + studio.galleryTasks.filter(t=>['queued','running'].includes(t.status)).length;
@@ -84,11 +88,28 @@ export default function App() {
   function openSession(id: string) {
     const session = doc.sessions.find(s => s.id === id);
     if (!session) return;
+    galleryReturn.current=isImageGallery&&galleryPanelRef.current
+      ? {scope:workspaceGallery?`workspace:${currentWorkspace.id}`:'gallery',scrollTop:galleryPanelRef.current.scrollTop}
+      : null;
     setSessionId(id); setWorkspaceId(session.workspaceId); setPage('workspace');
+  }
+  function prepareGalleryReturn(scope:string){
+    const saved=page==='workspace'&&galleryReturn.current?.scope===scope?galleryReturn.current:null;
+    pendingGalleryScroll.current=saved?.scrollTop??0;
+    galleryReturn.current=null;
+    return !!saved;
+  }
+  function openNavigationPage(next:Page){
+    const returning=next==='gallery'&&prepareGalleryReturn('gallery');
+    setPage(next);
+    if(!returning){setQuery('');setFilter('all');setGalleryWorkspace('all');}
   }
   function openWorkspace(id:string){
     if(!doc.workspaces.some(w=>w.id===id))return;
-    setWorkspaceId(id);setPage('workspace-gallery');setQuery('');setFilter('all');setGalleryWorkspace('all');setStack(true);setSelectedId(null);
+    if(workspaceGallery&&currentWorkspace.id===id)return;
+    const returning=prepareGalleryReturn(`workspace:${id}`);
+    setWorkspaceId(id);setPage('workspace-gallery');setSelectedId(null);
+    if(!returning){setQuery('');setFilter('all');setGalleryWorkspace('all');setStack(true);}
   }
   function workspaceDeleted(document:StudioDocument) {
     setSessionId('');setWorkspaceId(document.workspaces[0]?.id||'');setSelectedId(null);setLightboxId(null);
@@ -135,23 +156,44 @@ export default function App() {
       if (!workspaceGallery && galleryWorkspace !== 'all' && asset.workspaceId !== galleryWorkspace) return false;
       const workspace = doc.workspaces.find(w => w.id === asset.workspaceId);
       const session = doc.sessions.find(s => s.id === asset.sessionId);
+      if(isImageGallery&&!galleryView.showDiscarded&&session?.discarded)return false;
       return !normalized || `${asset.title} ${session?.title || ''} ${asset.originalPrompt} ${asset.submittedPrompt} ${workspace?.name || ''}`.toLowerCase().includes(normalized);
     });
     return stack && isImageGallery ? stackAssets(result) : result.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  }, [doc.assets, doc.workspaces, doc.sessions, query, page, showSamples, filter, galleryWorkspace, stack, referenceTab, workspaceGallery, galleryScopeId, isImageGallery]);
+  }, [doc.assets, doc.workspaces, doc.sessions, query, page, showSamples, filter, galleryWorkspace, stack, referenceTab, workspaceGallery, galleryScopeId, isImageGallery, galleryView.showDiscarded]);
+  useLayoutEffect(()=>{
+    if(page==='workspace')return;
+    // Only the immediate session round trip restores a position, not workspace switching.
+    galleryReturn.current=null;
+    const top=pendingGalleryScroll.current;pendingGalleryScroll.current=0;
+    const panel=galleryPanelRef.current;
+    if(!isImageGallery||!panel)return;
+    const content=panel.querySelector<HTMLElement>('.asset-grid, .photo-wall');
+    const restore=()=>{
+      // PhotoWall first measures its width, then mounts its rows.
+      if(top>0&&assets.length&&content&&!content.childElementCount)return false;
+      panel.scrollTop=top;
+      return true;
+    };
+    if(restore()||!content)return;
+    const observer=new ResizeObserver(()=>{if(restore())observer.disconnect();});
+    observer.observe(content);
+    return()=>observer.disconnect();
+  },[page,galleryScopeId,studio.ready]);
   const showInspector = selected && page === 'references' && assets.some(a => a.id === selected.id);
   const workspaceSessionIds=new Set(doc.sessions.filter(s=>s.workspaceId===galleryScopeId).map(s=>s.id));
   const visibleSessionIds=[...new Set(assets.map(a=>a.sessionId).filter(id=>workspaceSessionIds.has(id)))];
   const selectedSessionIds=selectedSessions.filter(id=>workspaceSessionIds.has(id)&&visibleSessionIds.includes(id));
   const selectedImageCount=doc.assets.filter(a=>selectedSessionIds.includes(a.sessionId)&&isGeneratedAsset(a)).length;
   function toggleSession(id:string){if(workspaceSessionIds.has(id))setSelectedSessions(ids=>ids.includes(id)?ids.filter(value=>value!==id):[...ids,id]);}
+  const discardedFilter=<label className="sample-toggle discarded-filter"><input type="checkbox" checked={galleryView.showDiscarded} onChange={e=>setGalleryView(current=>({...current,showDiscarded:e.target.checked}))}/>显示废弃</label>;
   const renderAsset=(asset:Asset)=><AssetCard key={asset.id} asset={asset} studio={studio} title={isImageGallery ? doc.sessions.find(session=>session.id===asset.sessionId)?.title : undefined} showFormatBadge={workspaceGallery} showSubtitle={!isImageGallery} wall={isImageGallery&&galleryView.mode==='wall'} selecting={workspaceGallery&&selecting} active={workspaceGallery&&selecting?selectedSessionIds.includes(asset.sessionId):page==='references' ? asset.id===selectedId : undefined} versions={stack&&isImageGallery ? doc.assets.filter(a=>assetStackKey(a)===assetStackKey(asset)&&(!workspaceGallery||(a.workspaceId===galleryScopeId&&isGeneratedAsset(a)))).length : 1} onSelect={() => { if(workspaceGallery&&selecting)toggleSession(asset.sessionId); else if (!isImageGallery) setSelectedId(asset.id); else if (doc.sessions.some(session=>session.id===asset.sessionId)) openSession(asset.sessionId); else openImage(asset.id); }} onOpen={page==='references' ? ()=>openImage(asset.id) : undefined} />;
 
   return <div className="app-shell">
     <Titlebar studio={studio} onSyncSettings={()=>{setSettingsTab('sync');setPage('settings');}} />
     <aside className="sidebar"><div className="sidebar-top"><nav aria-label="主要导航">{([
       ['gallery', Images, '图库'], ['references', ImagePlus, '参考图'], ['presets', WandSparkles, '效果预设'], ['jobs', ListChecks, '任务'],
-    ] as const).map(([key, Icon, label]) => <button key={key} className={`nav-item ${page === key ? 'active' : ''}`} aria-current={page === key ? 'page' : undefined} onClick={() => { setPage(key); setQuery(''); setFilter('all'); setGalleryWorkspace('all'); }}><Icon /><span>{label}</span>{key === 'jobs' && running > 0 && <span className="nav-count">{running}</span>}</button>)}</nav>
+    ] as const).map(([key, Icon, label]) => <button key={key} className={`nav-item ${page === key ? 'active' : ''}`} aria-current={page === key ? 'page' : undefined} onClick={() => openNavigationPage(key)}><Icon /><span>{label}</span>{key === 'jobs' && running > 0 && <span className="nav-count">{running}</span>}</button>)}</nav>
       <div className="workspace-caption"><span>工作区</span><button className="icon-button" aria-label="新建工作区" onClick={() => setDialog({ kind: 'workspace' })}><Plus /></button></div>
       <WorkspaceTree studio={studio} currentId={workspaceGallery || page === 'workspace' ? workspaceId : undefined} onOpen={openWorkspace} onRename={id => setDialog({kind:'rename-workspace',workspaceId:id})} onCreate={id => setDialog({kind:'create',workspaceId:id})} />
     </div><div className="sidebar-bottom"><button className={`nav-item ${page === 'settings' ? 'active' : ''}`} onClick={() => setPage('settings')}><Settings2 /><span>设置</span><span className="version-label">v0.1</span></button>
@@ -165,10 +207,10 @@ export default function App() {
       {!studio.ready && <div className="loading-screen">{studio.loadError ? <><CircleAlert /><h2>无法读取本地图库</h2><p>{studio.loadError}</p><button className="button secondary" onClick={() => void studio.refresh().catch(studio.report)}>重试</button></> : <><LoaderCircle className="spin" /><p>正在打开你的创作空间…</p></>}</div>}
       {studio.ready && <>
         {isGallery && <><header className={`page-header ${workspaceGallery?'workspace-gallery-header':''}`}><div><h1>{workspaceGallery?<span className="workspace-gallery-title" title={currentWorkspace.name}>{currentWorkspace.name}</span>:page==='gallery'?'所有图片':'参考图库'}<span className="heading-count">{assets.length}</span></h1></div><div className="header-actions">{workspaceGallery?<><button className="button secondary" aria-label="重命名当前工作区" onClick={()=>setDialog({kind:'rename-workspace',workspaceId:currentWorkspace.id})}><Pencil/>重命名</button><button className="button danger" aria-label="删除当前工作区" disabled={checkingWorkspace} onClick={()=>void requestWorkspaceDelete()}>{checkingWorkspace?<LoaderCircle className="spin"/>:<Trash2/>}{checkingWorkspace?'正在检查':'删除工作区'}</button></>:<button className="button secondary" onClick={()=>void importGallery(page==='references')}><ArrowDownToLine/>{page==='references'?'导入参考图':'导入图片'}</button>}{isImageGallery&&<button className="button primary" onClick={()=>setDialog({kind:'create',workspaceId:currentWorkspace.id})}><Plus/>新建创作</button>}</div></header>
-          <div className={`gallery-layout ${showInspector ? 'has-inspector' : ''}`}><section className="gallery-panel" aria-label={page === 'references' ? '参考图列表' : '图片列表'}>
-            <div className="gallery-toolbar"><label className="search-input"><Search /><input id="gallery-search" aria-label="搜索图片" placeholder={workspaceGallery?'搜索此工作区的图片、Prompt…':'搜索图片、Prompt、工作区…'} value={query} onChange={e => setQuery(e.target.value)} /><kbd>Ctrl F</kbd></label>{isImageGallery&&<><OptionSelect className="gallery-view-select" aria-label="展示模式" title="展示模式" value={galleryView.mode} onValueChange={mode=>setGalleryView(current=>({...current,mode:mode==='wall'?'wall':'cards'}))}><option value="cards">卡片模式</option><option value="wall">照片墙密铺</option></OptionSelect><OptionSelect className="gallery-size-select" aria-label="预览图大小" title="预览图大小" value={galleryView.size} onValueChange={size=>setGalleryView(current=>({...current,size:size as PreviewSize}))}><option value="normal">小</option><option value="large">中</option><option value="xlarge">大</option></OptionSelect></>}{isImageGallery && <div className="segment" role="group" aria-label="版本显示方式"><button aria-pressed={!stack} aria-label="平铺显示" disabled={selecting&&workspaceGallery} onClick={() => setStack(false)}><Columns3 /></button><button aria-pressed={stack} aria-label="堆叠版本" disabled={selecting&&workspaceGallery} onClick={() => setStack(true)}><Layers /></button></div>}{workspaceGallery&&<div className="filter-tabs" role="group" aria-label="筛选工作区图片">{[['all','全部'],['favorites','收藏']].map(([value,label])=><button className={filter===value?'selected':''} aria-pressed={filter===value} key={value} onClick={()=>setFilter(value)}>{value==='favorites'&&<Heart size={12}/>}{label}</button>)}</div>}{workspaceGallery&&<button className="button secondary" aria-pressed={selecting} disabled={!selecting&&!visibleSessionIds.length} onClick={()=>{setSelecting(value=>!value);setSelectedSessions([]);setStack(true);}}>{selecting?<X/>:<ListChecks/>}{selecting?'退出多选':'多选'}</button>}</div>
-            {!workspaceGallery&&<div className="gallery-filters"><div className="filter-tabs">{page === 'references' ? <><button className={referenceTab === 'global' ? 'selected' : ''} onClick={() => setReferenceTab('global')}>全局参考图</button><button className={referenceTab === 'history' ? 'selected' : ''} onClick={() => setReferenceTab('history')}>会话历史引用</button></> : <>{[['all', '全部'], ['favorites', '收藏'], ['generated', '已生成'], ['imported', '本地导入']].map(([value, label]) => <button className={filter === value ? 'selected' : ''} key={value} onClick={() => setFilter(value)}>{value === 'favorites' && <Heart size={12} />}{label}</button>)}</>}</div><div className="gallery-filter-actions"><OptionSelect className="workspace-filter" aria-label="筛选工作区" value={galleryWorkspace} onValueChange={value=> setGalleryWorkspace(value)}><option value="all">全部工作区</option>{doc.workspaces.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}</OptionSelect>{isImageGallery&&<label className="sample-toggle"><input type="checkbox" checked={showSamples} onChange={e => setShowSamples(e.target.checked)} />显示示例</label>}</div></div>}
-            {workspaceGallery&&selecting&&<div className="gallery-batch-bar" role="region" aria-label="批量会话操作"><div className="gallery-batch-summary"><strong aria-live="polite">已选 {selectedSessionIds.length} 个会话 · {selectedImageCount} 张生成图片</strong><span>按会话选择，包含全部版本；更改筛选会清空选择。</span></div><div className="gallery-batch-actions"><button className="button secondary small" disabled={!visibleSessionIds.length} onClick={()=>setSelectedSessions(selectedSessionIds.length===visibleSessionIds.length?[]:visibleSessionIds)}>{selectedSessionIds.length===visibleSessionIds.length&&visibleSessionIds.length?'取消全选':'全选当前结果'}</button><button className="button secondary small" disabled={!selectedSessionIds.length} onClick={()=>setBatchDialog({operation:'move',workspaceId:currentWorkspace.id,sessionIds:selectedSessionIds})}><FolderInput/>移动到…</button><button className="button secondary small" disabled={!selectedSessionIds.length} onClick={()=>studio.requestGalleryImport(doc.assets.filter(a=>selectedSessionIds.includes(a.sessionId)&&isGeneratedAsset(a)).map(a=>a.id),assets.filter(a=>selectedSessionIds.includes(a.sessionId)).map(a=>a.id))}><ArrowUpRight/>导入图库…</button><button className="button danger small" disabled={!selectedSessionIds.length} onClick={()=>setBatchDialog({operation:'delete',workspaceId:currentWorkspace.id,sessionIds:selectedSessionIds})}><Trash2/>批量删除</button></div></div>}
+          <div className={`gallery-layout ${showInspector ? 'has-inspector' : ''}`}><section ref={galleryPanelRef} className="gallery-panel" aria-label={page === 'references' ? '参考图列表' : '图片列表'}>
+            <div className="gallery-toolbar"><label className="search-input"><Search /><input id="gallery-search" aria-label="搜索图片" placeholder={workspaceGallery?'搜索此工作区的图片、Prompt…':'搜索图片、Prompt、工作区…'} value={query} onChange={e => setQuery(e.target.value)} /><kbd>Ctrl F</kbd></label>{isImageGallery&&<><OptionSelect className="gallery-view-select" aria-label="展示模式" title="展示模式" value={galleryView.mode} onValueChange={mode=>setGalleryView(current=>({...current,mode:mode==='wall'?'wall':'cards'}))}><option value="cards">卡片模式</option><option value="wall">照片墙密铺</option></OptionSelect><OptionSelect className="gallery-size-select" aria-label="预览图大小" title="预览图大小" value={galleryView.size} onValueChange={size=>setGalleryView(current=>({...current,size:size as PreviewSize}))}><option value="normal">小</option><option value="large">中</option><option value="xlarge">大</option></OptionSelect></>}{isImageGallery && <div className="segment" role="group" aria-label="版本显示方式"><button aria-pressed={!stack} aria-label="平铺显示" disabled={selecting&&workspaceGallery} onClick={() => setStack(false)}><Columns3 /></button><button aria-pressed={stack} aria-label="堆叠版本" disabled={selecting&&workspaceGallery} onClick={() => setStack(true)}><Layers /></button></div>}{workspaceGallery&&<div className="filter-tabs" role="group" aria-label="筛选工作区图片">{[['all','全部'],['favorites','收藏']].map(([value,label])=><button className={filter===value?'selected':''} aria-pressed={filter===value} key={value} onClick={()=>setFilter(value)}>{value==='favorites'&&<Heart size={12}/>}{label}</button>)}{discardedFilter}</div>}{workspaceGallery&&<button className="button secondary" aria-pressed={selecting} disabled={!selecting&&!visibleSessionIds.length} onClick={()=>{setSelecting(value=>!value);setSelectedSessions([]);setStack(true);}}>{selecting?<X/>:<ListChecks/>}{selecting?'退出多选':'多选'}</button>}</div>
+            {!workspaceGallery&&<div className="gallery-filters"><div className="filter-tabs">{page === 'references' ? <><button className={referenceTab === 'global' ? 'selected' : ''} onClick={() => setReferenceTab('global')}>全局参考图</button><button className={referenceTab === 'history' ? 'selected' : ''} onClick={() => setReferenceTab('history')}>会话历史引用</button></> : <>{[['all', '全部'], ['favorites', '收藏'], ['generated', '已生成'], ['imported', '本地导入']].map(([value, label]) => <button className={filter === value ? 'selected' : ''} key={value} onClick={() => setFilter(value)}>{value === 'favorites' && <Heart size={12} />}{label}</button>)}{discardedFilter}</>}</div><div className="gallery-filter-actions"><OptionSelect className="workspace-filter" aria-label="筛选工作区" value={galleryWorkspace} onValueChange={value=> setGalleryWorkspace(value)}><option value="all">全部工作区</option>{doc.workspaces.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}</OptionSelect>{isImageGallery&&<label className="sample-toggle"><input type="checkbox" checked={showSamples} onChange={e => setShowSamples(e.target.checked)} />显示示例</label>}</div></div>}
+            {workspaceGallery&&selecting&&<div className="gallery-batch-bar" role="region" aria-label="批量会话操作"><div className="gallery-batch-summary"><strong aria-live="polite">已选 {selectedSessionIds.length} 个会话 · {selectedImageCount} 张生成图片</strong><span>按会话选择，包含全部版本；更改筛选会清空选择。</span></div><div className="gallery-batch-actions"><button className="button secondary small" disabled={!visibleSessionIds.length} onClick={()=>setSelectedSessions(selectedSessionIds.length===visibleSessionIds.length?[]:visibleSessionIds)}>{selectedSessionIds.length===visibleSessionIds.length&&visibleSessionIds.length?'取消全选':'全选当前结果'}</button><button className="button secondary small" disabled={!selectedSessionIds.length} onClick={()=>setBatchDialog({operation:'move',workspaceId:currentWorkspace.id,sessionIds:selectedSessionIds})}><FolderInput/>移动到…</button><button className="button secondary small" disabled={!selectedSessionIds.length} onClick={()=>studio.requestGalleryImport(doc.assets.filter(a=>selectedSessionIds.includes(a.sessionId)&&isGeneratedAsset(a)).map(a=>a.id),assets.filter(a=>selectedSessionIds.includes(a.sessionId)).map(a=>a.id))}><ArrowUpRight/>导入图库…</button><SessionDiscardButton sessions={doc.sessions.filter(session=>selectedSessionIds.includes(session.id))} studio={studio}/><button className="button danger small" disabled={!selectedSessionIds.length} onClick={()=>setBatchDialog({operation:'delete',workspaceId:currentWorkspace.id,sessionIds:selectedSessionIds})}><Trash2/>批量删除</button></div></div>}
             {isImageGallery&&galleryView.mode==='wall'?<PhotoWall assets={assets} size={galleryView.size} renderAsset={renderAsset}/>:<div className="asset-grid" data-preview-size={isImageGallery?galleryView.size:'normal'}>{assets.map(renderAsset)}</div>}
             {!assets.length && <Empty title={query || filter !== 'all' ? '没有匹配的图片' : page === 'references' ? '为下一次创作准备素材' : workspaceGallery?'工作区还没有生成图片':'你的第一张作品，从这里开始'} description={query || filter !== 'all' ? '换一个关键词或筛选条件试试。' : page === 'references' ? '导入图片，或在作品详情中将图片加入全局参考图库。' : workspaceGallery?'在此工作区开始创作，生成的作品会汇集在这里。':'新建创作，或导入已有的图片。'}>{workspaceGallery?<button className="button secondary" onClick={()=>setDialog({kind:'create',workspaceId:currentWorkspace.id})}><Plus/>新建创作</button>:<button className="button secondary" onClick={() => void importGallery(page === 'references')}><Plus />导入图片</button>}</Empty>}
           </section>{showInspector && <AssetInspector asset={selected} studio={studio} onClose={() => setSelectedId(null)} onOpen={() => openImage(selected.id)} onBranch={() => branch(selected)} onCopyInputs={()=>copyInputs(selected)} onPreset={() => setDialog({ kind: 'preset', assetId: selected.id })} onSession={() => openSession(selected.sessionId)} onSelect={setSelectedId} />}</div>
