@@ -12,6 +12,7 @@ mod store;
 mod usage;
 mod sync;
 mod svg;
+mod sketch;
 mod gallery;
 mod gallery_import;
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -279,8 +280,11 @@ async fn import_image_data(
 ) -> Result<Value> {
     let _operation = store.operation()?;
     let snapshot = store.read()?;
-    find(&snapshot, "sessions", &session_id)?;
-    find(&snapshot, "workspaces", &workspace_id)?;
+    let global_reference = session_id.is_empty() && workspace_id.is_empty();
+    if !global_reference {
+        find(&snapshot, "sessions", &session_id)?;
+        find(&snapshot, "workspaces", &workspace_id)?;
+    }
     if images.is_empty() || images.len() > 8 {
         return Err("每次最多粘贴 8 张图片".into());
     }
@@ -305,6 +309,7 @@ async fn import_image_data(
                 worker.save_image(&bytes, &image.name.chars().take(80).collect::<String>())?;
             asset["workspaceId"] = json!(workspace_id);
             asset["sourceSessionId"] = json!(source_session);
+            asset["isReference"] = json!(global_reference);
             assets.push(asset);
         }
         Ok(assets)
@@ -313,7 +318,7 @@ async fn import_image_data(
     .map_err(|e| e.to_string())??;
     let mut ids = Vec::new();
     let document = store.change(|doc| {
-        ids = insert_imports(doc, assets, Some(&session_id))?;
+        ids = insert_imports(doc, assets, if global_reference { None } else { Some(&session_id) })?;
         Ok(())
     })?;
     Ok(json!({"document":changed(&app,document),"assetIds":ids}))
@@ -723,6 +728,9 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            sketch::load_sketch,
+            sketch::save_sketch,
+            sketch::export_sketch_file,
             bootstrap,
             gallery_settings,
             gallery_tasks,

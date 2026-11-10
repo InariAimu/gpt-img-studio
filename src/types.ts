@@ -1,4 +1,4 @@
-export type Page = 'gallery' | 'workspace-gallery' | 'workspace' | 'references' | 'presets' | 'jobs' | 'settings';
+export type Page = 'gallery' | 'workspace-gallery' | 'workspace' | 'references' | 'sketch' | 'presets' | 'jobs' | 'settings';
 export type PromptLayer = 'originalPrompt' | 'submittedPrompt' | 'revisedPrompt';
 export type ContextMode = 'new' | 'continue';
 export type ModelRole = 'image' | 'imageMain' | 'refine' | 'naming';

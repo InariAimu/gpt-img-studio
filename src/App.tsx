@@ -1,7 +1,7 @@
 import { OptionSelect } from './OptionSelect';
 import SessionDiscardButton from './SessionDiscardButton';
 import ErrorDetails from './ErrorDetails';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { ArrowDownToLine, ArrowUpRight, Check, CircleAlert, CircleCheck, Clock3, Columns3, FolderInput, Heart, ImagePlus, Images, Layers, ListChecks, LoaderCircle, Maximize2, Minimize2, Minus, Moon, Pencil, Plus, Search, Settings2, SlidersHorizontal, Sun, Trash2, WandSparkles, X } from 'lucide-react';
 import { AssetCard, AssetInspector, Empty, Modal, timeLabel } from './components';
@@ -21,6 +21,7 @@ import GalleryImportDialog from './GalleryImportDialog';
 import Tasks, { type TaskTab } from './Tasks';
 import PhotoWall, { type PreviewSize } from './PhotoWall';
 import type { Asset, Page, StudioDocument, WorkspaceDeletePreview } from './types';
+const SketchWorkspace = lazy(() => import('./sketch/SketchWorkspace'));
 
 type DialogState = { kind: 'create' | 'workspace'; workspaceId?: string } | { kind: 'preset'; assetId: string } | {kind:'move';sessionId:string} | {kind:'delete';sessionId:string} | {kind:'rename-workspace';workspaceId:string} | {kind:'delete-workspace';workspaceId:string;preview:WorkspaceDeletePreview} | null;
 function isGeneratedAsset(asset:Asset){return !asset.demo&&!!asset.sessionId&&asset.model!=='本地导入'&&!asset.referenceOnly;}
@@ -32,7 +33,9 @@ function readGalleryView():{mode:'cards'|'wall';size:PreviewSize;showDiscarded:b
 export default function App() {
   const studio = useStudio();
   const initial = useState(readNavigation)[0];
-  const [page, setPage] = useState<Page>(initial.page && ['gallery', 'workspace-gallery', 'workspace', 'references', 'presets', 'jobs', 'settings'].includes(initial.page) ? initial.page : 'gallery');
+  const [page, setPage] = useState<Page>(initial.page && ['gallery', 'workspace-gallery', 'workspace', 'references', 'sketch', 'presets', 'jobs', 'settings'].includes(initial.page) ? initial.page : 'gallery');
+  const sketchOpened = useRef(false);
+  if (page === 'sketch') sketchOpened.current = true;
   const [sessionId, setSessionId] = useState(initial.sessionId || 'demo-material');
   const [workspaceId, setWorkspaceId] = useState(initial.workspaceId || 'demo-plush');
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -192,7 +195,7 @@ export default function App() {
   return <div className="app-shell">
     <Titlebar studio={studio} onSyncSettings={()=>{setSettingsTab('sync');setPage('settings');}} />
     <aside className="sidebar"><div className="sidebar-top"><nav aria-label="主要导航">{([
-      ['gallery', Images, '图库'], ['references', ImagePlus, '参考图'], ['presets', WandSparkles, '效果预设'], ['jobs', ListChecks, '任务'],
+      ['gallery', Images, '图库'], ['references', ImagePlus, '参考图'], ['sketch', Pencil, '草图工作区'], ['presets', WandSparkles, '效果预设'], ['jobs', ListChecks, '任务'],
     ] as const).map(([key, Icon, label]) => <button key={key} className={`nav-item ${page === key ? 'active' : ''}`} aria-current={page === key ? 'page' : undefined} onClick={() => openNavigationPage(key)}><Icon /><span>{label}</span>{key === 'jobs' && running > 0 && <span className="nav-count">{running}</span>}</button>)}</nav>
       <div className="workspace-caption"><span>工作区</span><button className="icon-button" aria-label="新建工作区" onClick={() => setDialog({ kind: 'workspace' })}><Plus /></button></div>
       <WorkspaceTree studio={studio} currentId={workspaceGallery || page === 'workspace' ? workspaceId : undefined} onOpen={openWorkspace} onRename={id => setDialog({kind:'rename-workspace',workspaceId:id})} onCreate={id => setDialog({kind:'create',workspaceId:id})} />
@@ -217,6 +220,7 @@ export default function App() {
         </>}
         {page === 'workspace' && currentSession && <Workspace key={currentSession.id} studio={studio} session={currentSession} onWorkspace={openWorkspace} onOpen={openImage} onBranch={branch} onCopyInputs={copyInputs} onPreset={asset => setDialog({ kind: 'preset', assetId: asset.id })} onSettings={() => setPage('settings')} onMove={id=>setDialog({kind:'move',sessionId:id})} onDelete={id=>setDialog({kind:'delete',sessionId:id})} />}
         {page === 'presets' && <><header className="page-header"><div><h1>效果预设<span className="heading-count">{doc.presets.length}</span></h1></div><span className="muted">从作品详情保存你的常用效果</span></header><div className="presets-scroll"><div className="preset-intro"><WandSparkles /><div><h2>从一个喜欢的效果开始</h2><p>载入 Prompt 与生成参数，换上你的参考图，即可再次创作。</p></div></div><div className="preset-grid">{doc.presets.map(preset => { const cover = doc.assets.find(a => a.id === preset.assetId); return <article className="preset-card" key={preset.id}><div className="preset-cover">{cover && <img src={studio.imageUrl(cover, true)} alt={preset.name} />}{cover?.demo && <span className="sample-badge">示例效果</span>}</div><div className="preset-body"><h3>{preset.name}</h3><p>{preset.description}</p><div className="preset-details"><span>{preset.size.replace('x', ' × ')}</span><span>{preset.referenceIds.length ? `${preset.referenceIds.length} 张参考图` : '替换参考图使用'}</span></div><button className="button secondary full" onClick={() => void createSession({ workspaceId: currentWorkspace.id, presetId: preset.id, title: preset.name })}><WandSparkles />使用这个效果<ArrowUpRight /></button></div></article>; })}</div></div></>}
+        {sketchOpened.current && <div className="sketch-page" hidden={page !== 'sketch'}><Suspense fallback={<div className="loading-screen">正在打开草图工作区…</div>}><SketchWorkspace studio={studio} active={page === 'sketch'} /></Suspense></div>}
         {page === 'jobs' && <Tasks studio={studio} tab={taskTab} onTab={setTaskTab} onSession={openSession}/>}
         {page === 'settings' && <Settings studio={studio} tab={settingsTab} setTab={setSettingsTab} />}
       </>}

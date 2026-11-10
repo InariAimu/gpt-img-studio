@@ -66,6 +66,7 @@ impl Store {
         connection.execute_batch("CREATE TABLE IF NOT EXISTS usage_events (id TEXT PRIMARY KEY, occurred_at INTEGER NOT NULL, event TEXT NOT NULL);").map_err(|e|e.to_string())?;
         connection.execute_batch("CREATE TABLE IF NOT EXISTS model_usage (id TEXT PRIMARY KEY, occurred_at INTEGER NOT NULL, measurement TEXT NOT NULL);").map_err(|e|e.to_string())?;
         crate::gallery_import::init(&connection)?;
+        crate::sketch::init(&connection)?;
         connection
             .execute(
                 "INSERT OR IGNORE INTO studio_state(id, document) VALUES(1, ?1)",

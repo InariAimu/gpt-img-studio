@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { ArrowLeft, ArrowRight, Download, Expand, RotateCw, Scan, ZoomIn, ZoomOut } from 'lucide-react';
 import { Modal } from './components';
 import type { Asset, StudioDocument } from './types';
@@ -11,6 +11,8 @@ export function Lightbox({ asset, document: library, imageUrl, onClose, onSelect
   const current = useRef(transform); current.current = transform;
   const drag = useRef<{ id: number; x: number; y: number; originX: number; originY: number } | null>(null);
   const [dragging, setDragging] = useState(false);
+  const src = imageUrl(asset);
+  const [loadedSrc, setLoadedSrc] = useState<string | null>(null);
   const ratio = window.devicePixelRatio || 1;
   const index = library.assets.findIndex(a => a.id === asset.id);
   const navigation=useRef({assets:library.assets,index,onSelect}); navigation.current={assets:library.assets,index,onSelect};
@@ -61,7 +63,9 @@ export function Lightbox({ asset, document: library, imageUrl, onClose, onSelect
       onPointerDown={event => { if (event.button !== 0) return; event.preventDefault(); event.currentTarget.setPointerCapture(event.pointerId); drag.current = { id:event.pointerId, x:event.clientX, y:event.clientY, originX:current.current.x, originY:current.current.y }; setDragging(true); }}
       onPointerMove={event => { const start=drag.current; if (start?.id !== event.pointerId) return; apply({ ...current.current, x:start.originX+event.clientX-start.x, y:start.originY+event.clientY-start.y }); }}
       onPointerUp={() => { drag.current=null; setDragging(false); }} onPointerCancel={() => { drag.current=null; setDragging(false); }} onLostPointerCapture={() => { drag.current=null; setDragging(false); }}>
-      <img src={imageUrl(asset)} alt={asset.title} draggable={false} style={{ width:asset.width, height:asset.height, transform:`translate(-50%,-50%) translate(${transform.x}px,${transform.y}px) rotate(${transform.rotation}deg) scale(${transform.scale})` }} />
+      <img className="image-checkerboard" src={src} alt={asset.title} draggable={false} data-loaded={loadedSrc === src}
+        onLoad={() => setLoadedSrc(src)} onError={() => setLoadedSrc(null)}
+        style={{ width:asset.width, height:asset.height, '--image-scale':transform.scale, transform:`translate(-50%,-50%) translate(${transform.x}px,${transform.y}px) rotate(${transform.rotation}deg) scale(${transform.scale})` } as CSSProperties} />
     </div>
     <div className="lightbox-toolbar"><span className="lightbox-size">{asset.width} × {asset.height}</span><div className="lightbox-controls">
       <button className="icon-button" aria-label="缩小图片" title="缩小（−）" onClick={() => zoom(current.current.scale / 1.25)}><ZoomOut /></button><output aria-label="图片缩放比例">{Math.round(transform.scale * ratio * 100)}%</output><button className="icon-button" aria-label="放大图片" title="放大（+）" onClick={() => zoom(current.current.scale * 1.25)}><ZoomIn /></button>

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Ban, Check, ChevronDown, Copy, Download, GitBranch, Heart, Image as ImageIcon, Layers, Maximize2, Pencil, WandSparkles, X } from 'lucide-react';
 import GalleryImportButton from './GalleryImportButton';
+import ImageSurface from './ImageSurface';
 import { AutoSaveInput } from './AutoSaveInput';
 import { assetStackKey } from './assetStacks';
 import type { Asset, PromptLayer } from './types';
@@ -22,7 +23,7 @@ export function AssetCard({ asset, studio, title = asset.title, showSubtitle = t
   const format = showFormatBadge ? asset.mime === 'image/gif' ? 'GIF' : asset.mime === 'image/svg+xml' ? 'SVG' : '' : '';
   return <article className={`asset-card ${active ? 'selected' : ''} ${asset.favorite?'has-favorite':''} ${discarded?'is-discarded':''}`}>
     <button className="asset-main" onClick={onSelect} onDoubleClick={selecting?undefined:onOpen} aria-label={`${selecting?'选择会话':'查看'} ${title}${format ? ` · ${format}` : ''}${discarded?' · 已废弃':''}`} aria-pressed={active}>
-      <span className="asset-frame"><img src={studio.imageUrl(asset, true)} alt={title} loading="lazy" draggable={false} />
+      <span className="asset-frame"><ImageSurface src={studio.imageUrl(asset, true)} alt={title} width={asset.width} height={asset.height} />
         {discarded&&<span className="discarded-overlay"><span className="discarded-badge"><Ban size={14}/>已废弃</span></span>}
         {format && <span className="format-badge" aria-hidden="true">{format}</span>}
         {selecting&&<span className={`asset-selection-check ${active?'checked':''}`} aria-hidden="true">{active&&<Check size={14}/>}</span>}{asset.demo && <span className="sample-badge">示例</span>}{versions > 1 && <span className="version-badge" title={`${versions} 个版本`}><Layers size={12} />{versions}{!wall&&' 个版本'}</span>}{wall&&selecting&&asset.favorite&&<span className="wall-favorite-marker" aria-label="已收藏"><Heart size={14} fill="currentColor"/></span>}
@@ -49,7 +50,7 @@ export function AssetInspector({ asset, studio, onClose, onOpen, onBranch, onCop
   const workspace = studio.document.workspaces.find(w => w.id === asset.workspaceId);
   const session = studio.document.sessions.find(s => s.id === asset.sessionId);
   return <aside className="inspector" aria-label="图片详情"><div className="inspector-heading"><span>作品详情</span><button className="icon-button" aria-label="关闭详情" onClick={onClose}><X /></button></div>
-    <button className="inspector-preview" onClick={onOpen} aria-label="放大查看原图"><img src={studio.imageUrl(asset)} alt={asset.title} /><span className="preview-expand"><Maximize2 size={14} /></span></button>
+    <button className="inspector-preview" onClick={onOpen} aria-label="放大查看原图"><ImageSurface src={studio.imageUrl(asset)} alt={asset.title} width={asset.width} height={asset.height} /><span className="preview-expand"><Maximize2 size={14} /></span></button>
     {asset.demo?<div className="inspector-name">{asset.title}<span className="subtle-badge">示例</span></div>:<label className="inspector-name editable-asset-name" title="修改显示名称，按 Enter 或移开焦点保存"><AutoSaveInput key={asset.id} aria-label="图片名称" className="asset-name-input" value={asset.title} maxLength={200} onCommit={async title=>{try{await studio.mutate({type:'rename_asset',id:asset.id,title});}catch(error){studio.report(error);throw error;}}}/><Pencil aria-hidden="true"/></label>}
     <button className="breadcrumb-link" disabled={!session} onClick={onSession}>{workspace?.name || '本地图库'}{session && <> / {session.title}</>}</button>
     <dl className="properties"><dt>模型</dt><dd>{asset.model}</dd><dt>原图尺寸</dt><dd>{asset.width} × {asset.height}</dd><dt>质量</dt><dd>{qualityLabel(asset.quality)}</dd><dt>保存状态</dt><dd><span className="status-dot" />{asset.demo ? '内置示例插画' : '原图已保存到本地'}</dd></dl>
