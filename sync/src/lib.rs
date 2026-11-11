@@ -8,9 +8,11 @@ pub mod client;
 #[cfg(feature = "server")]
 pub mod server;
 pub type Result<T> = std::result::Result<T, String>;
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
 pub const MAX_BLOB: usize = 128 * 1024 * 1024;
-pub const COLLECTIONS: [&str; 6] = [
+pub const COLLECTIONS: [&str; 8] = [
+    "sketches",
+    "sketchLibraries",
     "workspaces",
     "sessions",
     "assets",
@@ -91,7 +93,7 @@ pub fn blob_name(path: &str) -> Result<&str> {
         .strip_prefix("assets/")
         .ok_or("图片路径必须位于 assets/")?;
     let (digest, ext) = name.split_once('.').ok_or("图片路径缺少扩展名")?;
-    if !valid_hash(digest) || !["png", "jpg", "jpeg", "webp", "gif", "svg"].contains(&ext) {
+    if !valid_hash(digest) || !["png", "jpg", "jpeg", "webp", "gif", "svg", "json"].contains(&ext) {
         return Err("无效的图片哈希路径".into());
     }
     Ok(name)
@@ -107,10 +109,20 @@ pub fn validate_entity(key: &str, value: &Option<Value>) -> Result<()> {
         }
         if collection == "assets" {
             let name = blob_name(v["path"].as_str().ok_or("缺少原图路径")?)?;
+            if name.ends_with(".json") { return Err("图片不能引用草图 JSON".into()); }
             if name.ends_with(".svg") != (v["mime"].as_str() == Some("image/svg+xml")) {
                 return Err("SVG 图片类型与文件扩展名不一致".into());
             }
         }
+        if collection == "sketches" {
+            let name = blob_name(v["documentPath"].as_str().ok_or("缺少草图文件")?)?;
+            if !name.ends_with(".json") || !v["revision"].is_string() || !v["name"].is_string()
+                || ["width", "height"].iter().any(|k| !v[*k].as_u64().is_some_and(|n| (256..=4096).contains(&n))) {
+                return Err("草图元数据无效".into());
+            }
+            if let Some(path)=v["previewPath"].as_str(){if !blob_name(path)?.ends_with(".png"){return Err("草图预览必须是 PNG".into());}}
+        }
+        if collection == "sketchLibraries" && (!v["savedPoses"].is_array() || !v["favoritePoses"].is_array()) { return Err("姿势库格式无效".into()); }
         if collection == "providers" {
             let url = reqwest::Url::parse(v["baseUrl"].as_str().unwrap_or(""))
                 .map_err(|_| "提供商地址无效")?;
@@ -131,6 +143,26 @@ pub fn validate_entity(key: &str, value: &Option<Value>) -> Result<()> {
         }
     }
     Ok(())
+}
+/// All content must arrive before its metadata, including editable JSON and rendered previews.
+pub fn blob_names(key:&str, value:&Value)->Result<Vec<String>> {
+    let fields:&[&str]=if key.starts_with("assets/"){&["path"]}else if key.starts_with("sketches/"){&["documentPath","previewPath"]}else{&[]};
+    fields.iter().filter_map(|field|value[*field].as_str()).map(|path|blob_name(path).map(str::to_owned)).collect()
+}
+/// Preserve concurrent scene edits as a separate document instead of merging transforms.
+pub fn preserve_sketch_conflicts(entities:&mut Entities,state:&mut ClientState) {
+    let conflicts:Vec<_>=state.conflicts.values().filter(|c|c.key.starts_with("sketches/")).cloned().collect();
+    for conflict in conflicts {
+        if let Some(mut local)=conflict.local.filter(|local| conflict.remote.as_ref().is_none_or(|remote| ["documentPath","name","trashedAt"].iter().any(|key|local[*key]!=remote[*key]))) {
+            let copy_id=format!("conflict-{}", &hash(local.to_string().as_bytes())[..32]);
+            local["id"]=Value::String(copy_id.clone());
+            local["name"]=Value::String(format!("{} · 冲突副本",local["name"].as_str().unwrap_or("草图").chars().take(100).collect::<String>()));
+            local.as_object_mut().unwrap().remove("trashedAt");
+            entities.insert(format!("sketches/{copy_id}"),local);
+        }
+        set(entities,&conflict.key,conflict.remote);
+        state.conflicts.remove(&conflict.key);
+    }
 }
 pub fn project(doc: &Value) -> Entities {
     let mut result = Entities::new();
@@ -164,7 +196,7 @@ pub fn project(doc: &Value) -> Entities {
                     }
                 }
             }
-            if collection == "assets" {
+            if collection == "assets" || collection == "sketches" {
                 item.as_object_mut().unwrap().remove("thumbnailPath");
             }
             if collection == "sessions" {

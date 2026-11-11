@@ -72,3 +72,34 @@
 .sketch-license-link {display:block;margin:14px auto 0;font-size:11px;color:var(--text-3);text-decoration:underline;}
 .sketch-licenses {white-space:pre-wrap;word-break:break-word;max-height:60vh;overflow:auto;padding:18px;font-size:12px;}
 @media(max-width:1150px){.sketch-layout{grid-template-columns:132px minmax(160px,1fr) 224px}.sketch-header{padding:10px 12px}.sketch-actions{gap:2px}.sketch-actions .button{padding:5px 8px;font-size:12px}.sketch-tools{padding:12px 8px}.sketch-properties{padding:10px}.sketch-canvas-status span:last-child{display:none}}
+
+.sketch-add-grid {display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:8px;}
+.sketch-add-grid .button {padding:5px 3px;}
+.sketch-entity-list {max-height:160px;overflow:auto;margin-top:5px;}
+.sketch-entity-list .sketch-layer-name svg {width:13px;height:13px;flex-shrink:0;}
+.sketch-inline-actions {display:flex;gap:5px;margin-top:8px;}
+.sketch-entity-properties details>summary {font-size:12px;font-weight:600;cursor:pointer;margin-bottom:8px;}
+.sketch-pose-modal {width:min(850px,94vw);max-height:92vh;}
+.sketch-pose-browser {padding:0 20px 16px;overflow:auto;}
+.sketch-pose-filters {display:grid;grid-template-columns:1fr 1fr 2fr;gap:12px;}
+.sketch-pose-cards {display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;}
+.sketch-pose-cards article {position:relative;min-width:0;border:1px solid var(--line);border-radius:8px;background:var(--bg);overflow:hidden;}
+.sketch-pose-apply {width:100%;display:flex;flex-direction:column;text-align:left;padding:8px;gap:3px;}
+.sketch-pose-apply:hover {background:var(--accent-soft);}
+.sketch-pose-apply img,.sketch-pose-placeholder {width:100%;aspect-ratio:200/156;object-fit:contain;background:var(--canvas);border-radius:4px;}
+.sketch-pose-apply strong {font-size:12px;font-weight:600;padding-right:24px;}
+.sketch-pose-apply>span {font-size:11px;color:var(--text-3);}
+.sketch-pose-card-actions {position:absolute;right:7px;bottom:8px;display:flex;gap:2px;}
+.sketch-pose-card-actions .icon-button {width:24px;height:24px;}
+.sketch-pose-card-actions svg {width:14px;height:14px;}
+.sketch-pose-card-actions [aria-pressed=true] {color:var(--accent-text);}
+.sketch-pose-pages {display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:16px;font-size:12px;color:var(--text-2);}
+@media(max-width:700px){.sketch-pose-cards{grid-template-columns:repeat(3,minmax(0,1fr))}.sketch-pose-filters{grid-template-columns:1fr 1fr}.sketch-pose-filters>label:last-child{grid-column:1/-1}}
+
+.sketch-add-section {padding-bottom:16px;margin-bottom:16px;border-bottom:1px solid var(--line);}
+.sketch-add-section h2 {margin-bottom:10px;}
+.sketch-pose-modal[open] {display:flex;flex-direction:column;overflow:hidden;}
+.sketch-pose-modal>.modal-heading {flex-shrink:0;}
+.sketch-pose-browser {min-height:0;}
+
+.sketch-library,.sketch-library-list{height:100%;min-height:0;display:flex;flex-direction:column}.sketch-library-list[hidden]{display:none}.sketch-preview{aspect-ratio:3/2;display:flex;align-items:center;justify-content:center;background:var(--subtle);position:relative}.sketch-preview img{width:100%;height:100%;object-fit:contain}.sketch-preview-empty{display:flex;gap:10px;align-items:center;color:var(--text-2);font-size:12px}.sketch-preview-status{position:absolute;bottom:8px;left:8px;border-radius:5px;background:var(--surface);padding:3px 7px;font-size:11px}.sketch-card-actions{display:flex;gap:5px;padding:0 10px 10px;justify-content:flex-end}.sketch-card-actions svg{width:15px;height:15px}.sketch-back{font-weight:600;color:var(--accent-text)}.sketch-breadcrumb{font-size:14px;color:var(--text-2);display:inline-block;max-width:250px;overflow:hidden;text-overflow:ellipsis;vertical-align:bottom;white-space:nowrap}.sketch-size-controls{margin:12px 0}.sketch-size-inputs{display:flex;align-items:center;gap:5px;margin-bottom:8px}.sketch-size-inputs label{flex:1;min-width:0;font-size:12px}.sketch-size-inputs input{width:100%;min-width:0;padding:5px}.sketch-picker-note{font-size:12px;color:var(--text-2);margin:0 0 12px}.sketch-picker-preview{aspect-ratio:3/2;display:flex;align-items:center;justify-content:center;background:var(--subtle);width:100%}.sketch-picker-preview img{object-fit:contain!important;width:100%;height:100%}.sketch-reference-tag{font-size:10px;color:var(--text-2)}

@@ -1,10 +1,10 @@
 import * as T from 'three';
-import { jointAxis, type Joint, type SceneData, type SceneSelection, type Tool } from './model';
-import type { Humanoid } from './Humanoid';
+import { updateEntity, limitRotation, jointAxis, type Joint, type SceneData, type SceneSelection, type Tool } from './model';
+import { Humanoid } from './Humanoid.ts';
 
 export interface SceneEditor { selection:SceneSelection|null; tool:Tool; axes:boolean; grid:boolean }
 type Handle = 'x'|'y'|'z'|'free'|'rotate';
-type Objects = {figure:Humanoid; pivots:Record<Joint,T.Object3D>; ball:T.Mesh; box:T.Mesh};
+type Objects = Map<string,T.Mesh|Humanoid>;
 export type SceneGesture = (point:T.Vector2, snap:boolean)=>SceneData;
 const axes=[new T.Vector3(1,0,0),new T.Vector3(0,1,0),new T.Vector3(0,0,1)];
 const colors=[0xf05b61,0x3ebc82,0x4999ff];
@@ -22,8 +22,7 @@ export class SceneInteraction {
   private grid=new T.GridHelper(10,20,0x87909e,0x9aa1ab);
   private originAxes=new T.AxesHelper(.65);
   private ray=new T.Raycaster();
-  private highlight=new T.MeshStandardMaterial({color:0xff8d9d,roughness:.8});
-  private originals=new Map<T.Mesh,T.Material|T.Material[]>();
+
   private editor:SceneEditor|null=null;
   private data:SceneData|null=null;
   constructor(scene:T.Scene,private camera:T.PerspectiveCamera,private objects:Objects){
@@ -51,28 +50,27 @@ export class SceneInteraction {
   }
   private rayAt(point:T.Vector2){this.ray.setFromCamera(point,this.camera);return this.ray.ray;}
   private partOf(object:T.Object3D):SceneSelection|null {
-    let joint:Joint|undefined;
-    for(let o:T.Object3D|null=object;o;o=o.parent){
-      joint??=o.userData.joint as Joint|undefined;
-      if(o===this.objects.figure)return {part:'figure',joint:joint??'torso'};
-      if(o===this.objects.ball)return {part:'ball'};
-      if(o===this.objects.box)return {part:'box'};
-    }
+    for(let o:T.Object3D|null=object;o;o=o.parent)if(o.userData.entityId)return {entityId:o.userData.entityId};
     return null;
   }
   pick(point:T.Vector2):SceneSelection|null {
     this.rayAt(point);
-    const hits=this.ray.intersectObjects([this.objects.figure,this.objects.ball,this.objects.box].filter(o=>o.visible),true);
+    const hits=this.ray.intersectObjects([...this.objects.values()].filter(o=>o.visible&&!o.userData.locked),true);
     if(!hits.length)return null;
-    if(hits[0].object===this.objects.figure.mesh)return {part:'figure',joint:this.objects.figure.pickJoint(hits[0])};
-    return this.partOf(hits[0].object);
+    const selection=this.partOf(hits[0].object);if(!selection)return null;
+    const object=this.objects.get(selection.entityId);
+    if(object instanceof Humanoid)selection.joint=object.pickJoint(hits[0]);
+    return selection;
   }
   pickHandle(point:T.Vector2):Handle|null {
     if(!this.gizmo.visible||!this.helpers.visible)return null;this.rayAt(point);
     const root=this.ring.visible?this.ring:this.moveGizmo;
     return this.ray.intersectObjects(root.children,true).find(h=>h.object.userData.handle)?.object.userData.handle??null;
   }
-  private object(selection:SceneSelection,rotation=false){return rotation&&selection.part==='figure'&&selection.joint?this.objects.pivots[selection.joint]:this.objects[selection.part];}
+  private object(selection:SceneSelection,rotation=false){
+    const root=this.objects.get(selection.entityId)!;
+    return rotation&&root instanceof Humanoid&&selection.joint?root.pivots[selection.joint]??root:root;
+  }
   private frame(selection:SceneSelection,index:0|1|2){
     const object=this.object(selection,true),q=object.parent!.getWorldQuaternion(new T.Quaternion());
     // Euler XYZ: the axes for Y and Z include the earlier Euler rotations.
@@ -82,34 +80,33 @@ export class SceneInteraction {
   }
   update(data:SceneData,editor:SceneEditor|null){
     this.data=data;this.editor=editor;this.helpers.visible=!!editor;
-    for(const [mesh,material] of this.originals)mesh.material=material;this.originals.clear();
-    const selectedFigure=editor?.selection?.part==='figure'&&data.figure.visible;
-    this.objects.figure.highlight(selectedFigure?(jointAxis(editor!.tool)!==null?editor!.selection!.joint??'torso':'all'):null);
+    for(const [id,object] of this.objects){
+      const selected=editor?.selection?.entityId===id&&object.visible&&!object.userData.locked;
+      if(object instanceof Humanoid)object.highlight(selected?(jointAxis(editor!.tool)!==null?editor!.selection!.joint??'all':'all'):null);
+      else (object.material as T.MeshStandardMaterial).emissive.set(selected?0x55202a:0);
+    }
+    this.gizmo.visible=false;
     if(!editor)return;
     this.grid.visible=editor.grid;this.originAxes.visible=editor.axes;
     const selection=editor.selection,index=jointAxis(editor.tool),rotating=index!==null;
-    this.gizmo.visible=!!selection&&data[selection.part].visible&&editor.tool!=='orbit';
-    if(!selection||!data[selection.part].visible)return;
-    this.objects[selection.part].traverse(o=>{
-      if(!(o instanceof T.Mesh))return;
-      if(o===this.objects.figure.mesh)return;
-      if(rotating&&selection.joint&&this.partOf(o)?.joint!==selection.joint)return;
-      this.originals.set(o,o.material);o.material=this.highlight;
-    });
+    const e=data.entities.find(e=>e.id===selection?.entityId);
+    if(!selection||!e?.visible||e.locked||!this.objects.has(e.id)||editor.tool==='orbit')return;
+    this.gizmo.visible=true;
     const origin=this.object(selection,rotating).getWorldPosition(new T.Vector3());this.gizmo.position.copy(origin);
     const size=clamp(this.camera.position.distanceTo(origin)*Math.tan(radians(this.camera.fov/2))*.32,.2,1.2);
-    this.gizmo.scale.setScalar(size);this.moveGizmo.visible=!rotating;this.ring.visible=rotating&&selection.part==='figure';
-    if(rotating&&selection.part==='figure')this.ring.quaternion.setFromUnitVectors(axes[2],this.frame(selection,index).axis);
-    if(rotating&&selection.part!=='figure')this.gizmo.visible=false;
+    this.gizmo.scale.setScalar(size);this.moveGizmo.visible=!rotating;this.ring.visible=rotating;
+    if(rotating)this.ring.quaternion.setFromUnitVectors(axes[2],this.frame(selection,index).axis);
     this.helpers.updateMatrixWorld(true);
   }
   /** A gesture stores its starting pose. React renders never reset its drag baseline. */
   begin(selection:SceneSelection,tool:Tool,point:T.Vector2,handle:Handle|null):SceneGesture|null {
     if(!this.data)return null;
-    const base=this.data,start=point.clone(),index=jointAxis(tool),part=selection.part;
+    const base=this.data,start=point.clone(),index=jointAxis(tool),entity=base.entities.find(e=>e.id===selection.entityId);
+    if(!entity||entity.locked||!this.objects.has(entity.id))return null;
+    const humanoid=this.objects.get(entity.id);
+    const displayedPose=entity.kind==='figure'&&entity.contacts.length&&humanoid instanceof Humanoid?{...entity.pose,...humanoid.readPose()}:entity.kind==='figure'?entity.pose:null;
     if(index!==null){
-      if(part!=='figure'||!selection.joint)return null;
-      const joint=selection.joint,{origin,axis}=this.frame(selection,index),plane=new T.Plane().setFromNormalAndCoplanarPoint(axis,origin);
+      const joint=entity.kind==='figure'?selection.joint:undefined,{origin,axis}=this.frame(selection,index),plane=new T.Plane().setFromNormalAndCoplanarPoint(axis,origin);
       const startOnPlane=this.rayAt(start).intersectPlane(plane,new T.Vector3());
       const center=origin.clone().project(this.camera),radius=this.gizmo.scale.x;
       let radial=startOnPlane?.clone().sub(origin);
@@ -127,9 +124,10 @@ export class SceneInteraction {
         const hit=usePlane?this.rayAt(p).intersectPlane(plane,new T.Vector3()):null;
         if(hit){const v=hit.sub(origin).normalize();const current=Math.atan2(axis.dot(radial!.clone().cross(v)),radial!.dot(v));total+=Math.atan2(Math.sin(current-last),Math.cos(current-last));last=current;angle=degrees(total);}
         else angle=degrees(p.clone().sub(start).dot(tangent)/screenRadius);
-        let value=base.figure.pose[joint][index]+angle;if(snap)value=Math.round(value/15)*15;
-        const r=[...base.figure.pose[joint]] as [number,number,number];r[index]=clamp(value,-180,180);
-        return {...base,figure:{...base.figure,pose:{...base.figure.pose,[joint]:r}}};
+        const original=entity.kind==='figure'&&joint?displayedPose![joint]:entity.rotation;
+        let value=original[index]+angle;if(snap)value=Math.round(value/15)*15;
+        const r=[...original] as [number,number,number];r[index]=clamp(value,-180,180);
+        return updateEntity(base,entity.id,e=>e.kind==='figure'&&joint?{...e,pose:{...displayedPose!,[joint]:limitRotation(joint,r)},contacts:[],poseId:undefined}:{...e,rotation:r});
       };
     }
     const origin=this.object(selection).getWorldPosition(new T.Vector3()),axisIndex=handle==='x'?0:handle==='y'?1:handle==='z'?2:null;
@@ -141,8 +139,9 @@ export class SceneInteraction {
     return (p,snap)=>{
       const hit=this.rayAt(p).intersectPlane(plane,new T.Vector3());if(!hit)return base;
       let delta=hit.sub(anchor);if(axis)delta=axis.clone().multiplyScalar(delta.dot(axis));else delta.y=0;
-      const next={...base[part]};for(const key of ['x','y','z'] as const){let value=base[part][key]+delta[key];if(snap&&(axis?axis[key]!==0:key!=='y'))value=Math.round(value*10)/10;next[key]=clamp(value,key==='y'?-2:-4,4);}
-      return {...base,[part]:next};
+      const next={...entity};for(const key of ['x','y','z'] as const){let value=entity[key]+delta[key];if(snap&&(axis?axis[key]!==0:key!=='y'))value=Math.round(value*10)/10;next[key]=clamp(value,-20,20);}
+      if(next.kind==='figure')next.supportId=undefined;
+      return updateEntity(base,entity.id,()=>next);
     };
   }
   cameraGesture(mode:'orbit'|'pan'|'zoom',point:T.Vector2):SceneGesture|null {
@@ -152,13 +151,13 @@ export class SceneInteraction {
     return p=>{
       const delta=p.clone().sub(start);
       if(mode==='orbit')return {...base,camera:{...c,azimuth:wrap(c.azimuth-delta.x*100),elevation:clamp(c.elevation-delta.y*75,-15,80)}};
-      if(mode==='zoom')return {...base,camera:{...c,distance:clamp(c.distance*Math.exp(-delta.y),2,12)}};
+      if(mode==='zoom')return {...base,camera:{...c,distance:clamp(c.distance*Math.exp(-delta.y),2,40)}};
       const offset=right.clone().multiplyScalar(-delta.x*halfHeight*this.camera.aspect).addScaledVector(up,-delta.y*halfHeight);
-      return {...base,camera:{...c,targetX:clamp((c.targetX??0)+offset.x,-8,8),targetY:clamp(c.targetY+offset.y,-8,8),targetZ:clamp((c.targetZ??0)+offset.z,-8,8)}};
+      return {...base,camera:{...c,targetX:clamp((c.targetX??0)+offset.x,-20,20),targetY:clamp(c.targetY+offset.y,-20,20),targetZ:clamp((c.targetZ??0)+offset.z,-20,20)}};
     };
   }
   dispose(){
-    for(const [mesh,material] of this.originals)mesh.material=material;this.originals.clear();this.highlight.dispose();
+
     this.helpers.traverse(o=>{
       if(o instanceof T.Mesh||o instanceof T.LineSegments||o instanceof T.Sprite){
         if('geometry' in o)o.geometry.dispose();

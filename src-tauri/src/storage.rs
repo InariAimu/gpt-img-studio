@@ -134,8 +134,9 @@ fn verify_database(root: &Path) -> Result<()> {
         .into_iter()
         .flatten()
         .filter(|a| a["demo"] != true)
+        .chain(doc["sketches"].as_array().into_iter().flatten())
     {
-        for field in ["path", "thumbnailPath"] {
+        for field in ["path", "thumbnailPath", "documentPath", "previewPath"] {
             let value = text(asset, field);
             if !value.is_empty() {
                 let relative = Path::new(value);

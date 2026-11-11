@@ -13,6 +13,7 @@ mod usage;
 mod sync;
 mod svg;
 mod sketch;
+mod sketch_library;
 mod gallery;
 mod gallery_import;
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -443,6 +444,7 @@ async fn generate(
         &app,
         store.change(|doc| {
             list_mut(doc, "jobs")?.insert(0, job);
+            sketch_library::promote(doc, &request.reference_ids)?;
             let session = list_mut(doc, "sessions")?
                 .iter_mut()
                 .find(|s| text(s, "id") == request.session_id)
@@ -728,6 +730,10 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            sketch_library::load_library_sketch,
+            sketch_library::save_library_sketch,
+            sketch_library::save_sketch_preview,
+            sketch_library::select_sketch_reference,
             sketch::load_sketch,
             sketch::save_sketch,
             sketch::export_sketch_file,

@@ -1,4 +1,5 @@
 import test from 'node:test';
+import fs from 'node:fs';
 import assert from 'node:assert/strict';
 import { Box3, Raycaster, Vector3 } from 'three';
 import { Humanoid } from '../src/sketch/Humanoid.ts';
@@ -9,13 +10,17 @@ const update = human => {human.updateMatrixWorld(true);human.updateBounds();};
 const vertices = human => Array.from({length:human.mesh.geometry.getAttribute('position').count},(_,i)=>human.mesh.getVertexPosition(i,new Vector3()));
 const approx = (actual, expected, tolerance=1e-5) => assert.ok(Math.abs(actual-expected)<tolerance, `${actual} != ${expected}`);
 
-test('old sketches keep their poses; malformed body data cannot reach the renderer', () => {
-  const old = initialSketch();delete old.layers[0].scene.figure.body;delete old.layers[0].scene.figure.modelVersion;
-  const before = JSON.stringify(old);validateSketch(old);assert.equal(JSON.stringify(old),before);
+test('old sketches retain their original rig and hidden objects; malformed body data is rejected', () => {
+  const old=JSON.parse(fs.readFileSync(new URL('./fixtures/sketch-v1.json',import.meta.url)));
+  const before=JSON.stringify(old),next=validateSketch(old);
+  assert.equal(JSON.stringify(old),before);assert.equal(next.version,2);
+  const s=next.layers[0].scene;
+  assert.equal(s.entities.length,3);assert.equal(s.entities[2].visible,false);assert.equal(s.entities[0].modelVersion,1);
+  for(const [joint,r] of Object.entries(old.layers[0].scene.figure.pose))assert.deepEqual(s.entities[0].pose[joint],r);
   for (const body of [null,{},[],{...bodyDefaults(),height:NaN},{...bodyDefaults(),arms:200}]) {
-    const doc=initialSketch();doc.layers[0].scene.figure.body=body;assert.throws(()=>validateSketch(doc));
+    const doc=initialSketch();doc.layers[0].scene.entities[0].body=body;assert.throws(()=>validateSketch(doc));
   }
-  const future=initialSketch();future.layers[0].scene.figure.modelVersion=2;assert.throws(()=>validateSketch(future));
+  const future=initialSketch();future.layers[0].scene.entities[0].modelVersion=3;assert.throws(()=>validateSketch(future));
 });
 
 test('rest binding matches the continuous surface at parameter limits and under world transforms', () => {

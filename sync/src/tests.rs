@@ -119,7 +119,7 @@ mod http {
     impl Fixture {
         async fn new() -> Self {
             let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../output/sync-v1/tests")
+                .join("../output/sketch-library-20261111/sync-tests")
                 .join(uuid::Uuid::new_v4().to_string());
             std::fs::create_dir_all(&root).unwrap();
             let token = "a-synthetic-test-token-with-at-least-32-characters".to_string();
@@ -166,6 +166,7 @@ mod http {
             let previous = project(doc);
             let (mut entities, mut next) =
                 reconcile(&previous, state.clone(), &e.sent, &e.accepted, &e.remote);
+            preserve_sketch_conflicts(&mut entities, &mut next);
             protect_references(&mut entities, &previous, &mut next)?;
             apply(doc, &entities);
             next.cursor = e.cursor;
@@ -173,6 +174,20 @@ mod http {
             *state = next;
             Ok(e)
         }
+    }
+    #[tokio::test]
+    async fn sketch_files_pose_library_and_deletion_restore_round_trip() {
+        let f=Fixture::new().await;let mut a=document("initial");let mut b=document("initial");
+        let (mut sa,mut sb)=(ClientState::default(),ClientState::default());
+        let bytes=vec![b' ';2*1024*1024];let json_path=format!("assets/{}.json",hash(&bytes));let png_path=format!("assets/{}.png",hash(b"synthetic-png"));
+        std::fs::create_dir_all(f.root.join("a/assets")).unwrap();std::fs::write(f.root.join("a").join(&json_path),&bytes).unwrap();std::fs::write(f.root.join("a").join(&png_path),b"synthetic-png").unwrap();
+        a["sketches"]=json!([{"id":"s1","revision":"r1","name":"驾驶构图","width":1536,"height":1024,"documentPath":json_path,"previewPath":png_path,"previewRevision":json_path}]);
+        a["sketchLibraries"]=json!([{"id":"shared","savedPoses":[],"favoritePoses":["driving"]}]);
+        assert_eq!(f.sync("a",&mut a,&mut sa).await.unwrap().uploaded,2);
+        assert_eq!(f.sync("b",&mut b,&mut sb).await.unwrap().downloaded,2);
+        assert_eq!(std::fs::read(f.root.join("b").join(&json_path)).unwrap(),bytes);assert_eq!(b["sketchLibraries"],a["sketchLibraries"]);
+        b["sketches"][0]["trashedAt"]=json!("now");b["sketches"][0]["revision"]=json!("r2");f.sync("b",&mut b,&mut sb).await.unwrap();f.sync("a",&mut a,&mut sa).await.unwrap();assert_eq!(a["sketches"][0]["trashedAt"],"now");
+        a["sketches"][0].as_object_mut().unwrap().remove("trashedAt");a["sketches"][0]["revision"]=json!("r3");f.sync("a",&mut a,&mut sa).await.unwrap();f.sync("b",&mut b,&mut sb).await.unwrap();assert!(b["sketches"][0]["trashedAt"].is_null());assert!(f.root.join("b").join(png_path).is_file());
     }
     #[tokio::test]
     async fn two_clients_blobs_retry_conflict_resolution_and_tombstones() {
@@ -386,4 +401,21 @@ mod http {
             bytes
         );
     }
+}
+
+#[test]
+fn sketch_sync_transfers_both_files_and_preserves_concurrent_edits() {
+    let make=|tag:&str| json!({"id":"sketch-a","name":"构图","revision":tag,"documentPath":format!("assets/{}.json",hash(tag.as_bytes())),"previewPath":format!("assets/{}.png",hash(b"png")),"width":1536,"height":1024,"favorite":false});
+    let base=make("base"); let local=make("local"); let remote=make("remote");
+    validate_entity("sketches/sketch-a",&Some(local.clone())).unwrap();
+    assert_eq!(blob_names("sketches/sketch-a",&local).unwrap().len(),2);
+    assert!(validate_entity("assets/a",&Some(json!({"id":"a","path":local["documentPath"]}))).is_err());
+    let mut state=ClientState::default();state.baseline.insert("sketches/sketch-a".into(),Record{key:"sketches/sketch-a".into(),revision:1,value:Some(base)});
+    let mut entities=Entities::new();entities.insert("sketches/sketch-a".into(),local.clone());
+    let (mut merged,mut state)=reconcile(&entities,state,&[],&[],&[Record{key:"sketches/sketch-a".into(),revision:2,value:Some(remote.clone())}]);
+    preserve_sketch_conflicts(&mut merged,&mut state);
+    assert!(state.conflicts.is_empty());assert_eq!(merged["sketches/sketch-a"],remote);
+    assert!(merged.values().any(|v|v["documentPath"]==local["documentPath"]&&v["name"].as_str().unwrap().contains("冲突副本")));
+    assert_eq!(mutations(&merged,&state).len(),1);
+    let mut doc=document("");apply(&mut doc,&merged);assert_eq!(doc["sketches"].as_array().unwrap().len(),2);
 }

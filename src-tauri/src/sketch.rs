@@ -9,7 +9,7 @@ pub fn init(connection: &Connection) -> Result<()> {
     connection.execute_batch("CREATE TABLE IF NOT EXISTS sketch_state (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, document TEXT NOT NULL);").map_err(|e|e.to_string())
 }
 fn encoded(document: &Value) -> Result<String> {
-    if document["version"] != 1 || !document["layers"].is_array() || document["layers"].as_array().unwrap().len()>200 {
+    if !matches!(document["version"].as_u64(), Some(1 | 2)) || !document["layers"].is_array() || document["layers"].as_array().unwrap().len()>200 {
         return Err("草图格式无效或版本不受支持".into());
     }
     let value=serde_json::to_string(document).map_err(|e|e.to_string())?;
@@ -58,9 +58,13 @@ mod tests {
         let first=json!({"version":1,"layers":[],"name":"first"});
         assert_eq!(save(&mut c,&first,0).unwrap(),1);
         assert!(save(&mut c,&json!({"version":1,"layers":[],"name":"stale"}),0).is_err());
-        assert!(save(&mut c,&json!({"version":2,"layers":[]}),1).is_err());
+        assert!(save(&mut c,&json!({"version":3,"layers":[]}),1).is_err());
         let saved:String=c.query_row("SELECT document FROM sketch_state",[],|r|r.get(0)).unwrap();
         assert_eq!(serde_json::from_str::<Value>(&saved).unwrap(),first);
         assert_eq!(c.query_row("SELECT value FROM unrelated",[],|r|r.get::<_,String>(0)).unwrap(),"keep");
+        let upgraded=json!({"version":2,"layers":[],"savedPoses":[],"favoritePoses":[]});
+        assert_eq!(save(&mut c,&upgraded,1).unwrap(),2);
+        let stored:String=c.query_row("SELECT document FROM sketch_state",[],|r|r.get(0)).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&stored).unwrap(),upgraded);
     }
 }

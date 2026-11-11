@@ -11,7 +11,7 @@ Source: https://github.com/makehumancommunity/makehuman
 
 These assets are CC0 1.0 Universal; the full license is in `LICENSE-CC0.txt` and
 available in the editor's license dialog. No MakeHuman/MPFB generator source code
-is embedded. The mesh has 13,380 vertices, 26,756 triangles, eleven skin bones,
+is embedded. The mesh has 13,380 vertices, 26,756 triangles, nineteen skin bones,
 and at most four normalized influences per vertex. Arms are baked into a relaxed
 rest pose to preserve the editor's existing joint angle convention.
 
@@ -19,5 +19,8 @@ Regenerate with `node scripts/prepare-humanoid.mjs` from the repository root.
 Downloads are cached under `output/humanoid-source/` (or the directory passed as
 the first argument); they are not needed for ordinary builds or at runtime.
 The runtime applies proportion changes to both the rest mesh and joint centers,
-updates inverse bind matrices, and then reapplies the stored pose. Hands, feet
-and face have no independent controls in this version.
+updates inverse bind matrices, and then reapplies the stored pose. Wrists and ankles have independent controls; individual fingers and facial controls are not included.
+
+`humanoid-v1.json` preserves the eleven-bone rig for old sketches. New poses use the extended rig.
+The 72 built-in poses in `../poses.ts` are authored for this application under its MIT license; no external animation library is bundled.
+Joint ranges are practical editor constraints, not medical range-of-motion specifications.

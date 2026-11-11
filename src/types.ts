@@ -33,6 +33,7 @@ export interface Session {
   lastProviderBaseUrl?: string; lastMainModel?: string; lastProviderId?: string;
 }
 export interface Asset {
+  sketchId?:string; sketchRevision?:string; sketchSnapshot?:boolean; sketchPromotedAt?:string;
   id: string; title: string; path: string; thumbnailPath?: string; mime: string;
   width: number; height: number; createdAt: string; workspaceId: string; sessionId: string;
   originalPrompt: string; submittedPrompt: string; revisedPrompt?: string;
@@ -52,7 +53,9 @@ export interface GalleryTask {
 }
 export interface Preset { id: string; name: string; description: string; assetId: string; prompt: string; size: string; quality: string; referenceIds: string[]; createdAt: string }
 export interface Job { id: string; sessionId: string; prompt: string; originalPrompt?: string; referenceIds?: string[]; contextMode?: ContextMode; previousResponseId?: string; imageSelection?: ModelSelection; status: 'running' | 'completed' | 'failed' | 'interrupted'; createdAt: string; finishedAt?: string; displayElapsedMs?: number; error?: string; assetIds: string[] }
-export interface StudioDocument { schemaVersion: number; revision: number; settings: Settings; workspaces: Workspace[]; sessions: Session[]; assets: Asset[]; presets: Preset[]; jobs: Job[] }
+export interface SketchRecord { id:string; name:string; createdAt:string; updatedAt:string; revision:string; documentPath:string; previewPath?:string; thumbnailPath?:string; previewRevision?:string; width:number; height:number; favorite:boolean; trashedAt?:string }
+export interface SketchLibrary { id:string; savedPoses:import('./sketch/model').SavedPose[]; favoritePoses:string[] }
+export interface StudioDocument { schemaVersion: number; revision: number; settings: Settings; workspaces: Workspace[]; sessions: Session[]; assets: Asset[]; presets: Preset[]; jobs: Job[]; sketches?:SketchRecord[]; sketchLibraries?:SketchLibrary[] }
 export interface Bootstrap { document: StudioDocument; dataDir: string; hasImageKey: boolean; hasRefineKey: boolean; providerKeys?: Record<string, boolean>; storageNotice?: string | null }
 export interface UsageComponent { kind: string; model: string; usageAvailable: boolean; tokens: { totalInput: number | null; output: number | null; cacheRead: number | null; cacheWrite: number | null; reasoning: number | null }; estimatedCostUsd: string | null; estimateStatus: string; cacheBreakdownKnown: boolean; rawUsage: unknown }
 export interface UsageEvent { id: string; sessionId: string; operation: string; provider: { id: string; name: string; kind: string }; model: string; occurredAt: number; requestCount: number; statusCode: number | null; durationMs: number; estimatedCostUsd: string | null; estimateStatus: string; components: UsageComponent[]; apiError?: import('./apiErrors').ApiErrorInfo }

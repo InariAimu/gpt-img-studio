@@ -96,12 +96,10 @@ impl Service {
             if !seen.insert(&m.key) {
                 return Err((StatusCode::BAD_REQUEST, "同一批次不能重复修改记录".into()));
             }
-            if m.key.starts_with("assets/") {
-                if let Some(v) = &m.value {
-                    let name = blob_name(v["path"].as_str().unwrap())
-                        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+            if let Some(v) = &m.value {
+                for name in blob_names(&m.key,v).map_err(|e| (StatusCode::BAD_REQUEST,e))? {
                     if !self.root.join("blobs").join(name).is_file() {
-                        return Err((StatusCode::CONFLICT, "原图尚未上传完成".into()));
+                        return Err((StatusCode::CONFLICT, "图片或草图文件尚未上传完成".into()));
                     }
                 }
             }

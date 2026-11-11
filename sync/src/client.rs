@@ -89,7 +89,7 @@ pub async fn exchange(
         .ok_or("同步服务器缺少身份")?
         .to_string();
     if health["service"] != "gpt-img-studio-sync" || health["protocol"] != PROTOCOL {
-        return Err("同步服务器协议不兼容".into());
+        return Err("同步服务器协议不兼容：草图库需要 v2 同步服务，请更新服务及其他设备客户端；本机数据已保留".into());
     }
     if !state.server_id.is_empty() && server_id != state.server_id {
         return Err("同步服务器身份发生变化；已暂停同步以保护本地数据，请恢复原服务备份".into());
@@ -104,11 +104,7 @@ pub async fn exchange(
     let mut uploaded = 0;
     let mut names = BTreeSet::new();
     for m in &sent {
-        if m.key.starts_with("assets/") {
-            if let Some(v) = &m.value {
-                names.insert(blob_name(v["path"].as_str().unwrap_or(""))?.to_string());
-            }
-        }
+        if let Some(v) = &m.value { names.extend(blob_names(&m.key,v)?); }
     }
     for name in names {
         let r = client
@@ -214,9 +210,10 @@ pub async fn exchange(
     tokio::fs::create_dir_all(root.join("assets"))
         .await
         .map_err(|e| e.to_string())?;
-    for r in latest.values().filter(|r| r.key.starts_with("assets/")) {
+    for r in latest.values() {
         if let Some(v) = &r.value {
-            let name = blob_name(v["path"].as_str().unwrap_or(""))?;
+          for name in blob_names(&r.key,v)? {
+            let name = name.as_str();
             let path = local_path(root, name)?;
             if path.is_file() {
                 let existing = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
@@ -272,6 +269,7 @@ pub async fn exchange(
             }
             result?;
             downloaded += 1;
+          }
         }
     }
     Ok(Exchange {

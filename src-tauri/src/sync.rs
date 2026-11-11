@@ -107,6 +107,7 @@ impl Store {
             &e.accepted,
             &e.remote,
         );
+        studio_sync::preserve_sketch_conflicts(&mut entities, &mut state);
         studio_sync::protect_references(&mut entities, &previous, &mut state)?;
         studio_sync::apply(&mut doc, &entities);
         for asset in doc["assets"].as_array_mut().into_iter().flatten() {

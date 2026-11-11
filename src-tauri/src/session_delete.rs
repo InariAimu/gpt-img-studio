@@ -400,6 +400,11 @@ impl Archive {
                 }
             }
         }
+        for sketch in after["sketches"].as_array().into_iter().flatten() {
+            for key in ["documentPath", "previewPath", "thumbnailPath"] {
+                if !text(sketch,key).is_empty() { kept_paths.insert(safe_path(&root,text(sketch,key))?.to_string_lossy().to_lowercase()); }
+            }
+        }
         let mut paths = BTreeSet::new();
         for asset in &deleted {
             if asset["demo"] == true {

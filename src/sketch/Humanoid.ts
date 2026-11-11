@@ -1,13 +1,8 @@
 import * as T from 'three';
-import asset from './assets/humanoid.json' with { type: 'json' };
-import type { BodyShape, Joint, Rotation } from './model';
-
-const rest = asset.joints.reduce<T.Vector3[]>((list, _, i) => {
-  if (i % 3 === 0) list.push(new T.Vector3().fromArray(asset.joints, i));
-  return list;
-}, []);
-const jointNames = asset.bones as ('pelvis' | Joint)[];
-const jointOf = (bone: number): Joint => jointNames[bone] === 'pelvis' ? 'torso' : jointNames[bone] as Joint;
+import currentAsset from './assets/humanoid.json' with { type: 'json' };
+import legacyAsset from './assets/humanoid-v1.json' with { type: 'json' };
+import { constrainPose, limitRotation } from './rig.ts';
+import type { BodyShape, Joint, Rotation, Pose, Contact } from './model';
 
 /** Continuous CC0 human surface, fitted and rebound before applying the stored pose. */
 export class Humanoid extends T.Group {
@@ -19,9 +14,20 @@ export class Humanoid extends T.Group {
   private poseKey = '';
   private highlightKey = '';
   private boundsDirty = true;
+  private rest:T.Vector3[];
+  private jointNames:Joint[];
+  private asset:typeof currentAsset;
+  private jointOf=(bone:number):Joint=>this.modelVersion===1&&bone===0?'torso':this.jointNames[bone];
+  private body= {} as BodyShape;
+  contactError=0;
+  readonly modelVersion:1|2;
 
-  constructor(body: BodyShape) {
+  constructor(body: BodyShape,modelVersion:1|2=2) {
     super();
+    this.modelVersion=modelVersion;
+    const asset=this.asset=modelVersion===1?legacyAsset:currentAsset;
+    const jointNames=this.jointNames=asset.bones as Joint[];
+    this.rest=asset.joints.reduce<T.Vector3[]>((list,_,i)=>{if(i%3===0)list.push(new T.Vector3().fromArray(asset.joints,i));return list;},[]);
     const geometry = new T.BufferGeometry();
     geometry.setAttribute('position', new T.Float32BufferAttribute(asset.positions, 3));
     geometry.setAttribute('skinIndex', new T.Uint16BufferAttribute(asset.skinIndices, 4));
@@ -35,7 +41,7 @@ export class Humanoid extends T.Group {
     const bones = jointNames.map(name => {const bone = new T.Bone();bone.name = name;return bone;});
     bones.forEach((bone, i) => {
       (asset.parents[i] < 0 ? this : bones[asset.parents[i]]).add(bone);
-      if (i > 0) {this.pivots[jointOf(i)] = bone;bone.userData.joint = jointOf(i);}
+      if(i>0||modelVersion===2){this.pivots[this.jointOf(i)]=bone;bone.userData.joint=this.jointOf(i);}
     });
     this.skeleton = new T.Skeleton(bones, bones.map(() => new T.Matrix4()));
     this.add(this.mesh);
@@ -45,6 +51,8 @@ export class Humanoid extends T.Group {
 
   setBody(body: BodyShape) {
     const key = JSON.stringify(body);
+    this.body=body;
+    const rest=this.rest,asset=this.asset;
     if (key === this.shapeKey) return;
     this.shapeKey = key;
     const shoulder = body.shoulders / 100, hip = body.hips / 100, arm = body.arms / 100;
@@ -59,6 +67,15 @@ export class Humanoid extends T.Group {
       centers[lower].copy(rest[lower]).sub(rest[upper]);
       centers[lower].y *= leg;
       centers[lower].add(centers[upper]);
+    }
+    if(this.modelVersion===2){
+      for(const side of ['left','right']){
+        const shoulderIndex=this.jointNames.indexOf(`${side}Arm` as Joint), hipIndex=this.jointNames.indexOf(`${side}Leg` as Joint);
+        const wrist=this.jointNames.indexOf(`${side}Wrist` as Joint),ankle=this.jointNames.indexOf(`${side}Ankle` as Joint);
+        centers[wrist].copy(rest[wrist]).sub(rest[shoulderIndex]).multiplyScalar(arm).add(centers[shoulderIndex]);
+        centers[ankle].copy(rest[ankle]).sub(rest[hipIndex]);centers[ankle].y*=leg;centers[ankle].add(centers[hipIndex]);
+        centers[this.jointNames.indexOf(`${side}Clavicle` as Joint)].x*=shoulder;
+      }
     }
     const waistY = rest[1].y + .10, chestY = rest[3].y;
     const bodyWidth = (y: number) => y < waistY
@@ -78,9 +95,9 @@ export class Humanoid extends T.Group {
         if (!weight) continue;
         local.copy(source).sub(rest[bone]);
         if (bone === 2) local.multiplyScalar(head);
-        else if (bone >= 3) {
+        else if (/Arm|Elbow|Wrist|Leg|Knee|Ankle/.test(this.jointNames[bone])) {
           local.x *= 1 + fat * .16;local.z *= 1 + fat * .22;
-          local.y *= bone < 7 ? arm : leg;
+          local.y *= /Arm|Elbow|Wrist/.test(this.jointNames[bone]) ? arm : leg;
         } else {
           local.x *= bodyWidth(source.y) * (1 + fat * .13);
           local.z *= 1 + fat * .24;
@@ -95,8 +112,8 @@ export class Humanoid extends T.Group {
     for (let vertex = 0; vertex < position.count; vertex++) {
       source.fromBufferAttribute(position, vertex).multiplyScalar(scale);position.setXYZ(vertex,source.x,source.y,source.z);
     }
+    centers.forEach(center=>center.multiplyScalar(scale));
     centers.forEach((center, i) => {
-      center.multiplyScalar(scale);
       const parent = asset.parents[i];
       this.skeleton.bones[i].position.copy(center).sub(parent < 0 ? new T.Vector3() : centers[parent]);
       // Model-space bind matrices are independent of figure translation/yaw/scale.
@@ -110,13 +127,64 @@ export class Humanoid extends T.Group {
   }
 
   setPose(pose: Record<Joint, Rotation>) {
+    if(this.modelVersion===2)pose=constrainPose(pose);
     const key = JSON.stringify(pose);
-    if (key === this.poseKey) return;
     this.poseKey = key;
     for (const [joint, bone] of Object.entries(this.pivots)) bone.rotation.set(...pose[joint as Joint].map(T.MathUtils.degToRad) as Rotation);
     this.boundsDirty = true;
   }
 
+  /** CCD with the same joint limits as manual editing. Targets are in rest-model space. */
+  solveContacts(contacts:Contact[]) {
+    this.contactError=0;
+    if(this.modelVersion===1||!contacts.length)return;
+    this.updateMatrixWorld(true);
+    for(const contact of contacts){
+      const effector=this.pivots[contact.joint];
+      const side=contact.joint.startsWith('left')?'left':'right';
+      const chain=(contact.joint.endsWith('Wrist')?[`${side}Elbow`,`${side}Arm`]:[`${side}Knee`,`${side}Leg`]) as Joint[];
+      const target=this.localToWorld(new T.Vector3(...contact.target).multiplyScalar(this.body.height/175));
+      for(let iteration=0;iteration<18;iteration++){
+        if(effector.getWorldPosition(new T.Vector3()).distanceTo(target)<.008)break;
+        for(const joint of chain){
+          const bone=this.pivots[joint],origin=bone.getWorldPosition(new T.Vector3());
+          const inverse=bone.getWorldQuaternion(new T.Quaternion()).invert();
+          const from=effector.getWorldPosition(new T.Vector3()).sub(origin).applyQuaternion(inverse).normalize();
+          const to=target.clone().sub(origin).applyQuaternion(inverse).normalize();
+          bone.quaternion.multiply(new T.Quaternion().setFromUnitVectors(from,to));
+          const r=limitRotation(joint,[bone.rotation.x,bone.rotation.y,bone.rotation.z].map(T.MathUtils.radToDeg) as Rotation);
+          bone.rotation.set(...r.map(T.MathUtils.degToRad) as Rotation);this.updateMatrixWorld(true);
+        }
+      }
+      this.contactError=Math.max(this.contactError,effector.getWorldPosition(new T.Vector3()).distanceTo(target));
+    }
+    this.boundsDirty=true;
+  }
+  readPose():Pose {
+    return Object.fromEntries(Object.entries(this.pivots).map(([key,bone])=>[key,[bone.rotation.x,bone.rotation.y,bone.rotation.z].map(T.MathUtils.radToDeg)])) as Pose;
+  }
+  supportOffset(seat=false):number {
+    this.updateMatrixWorld(true);
+    if(seat)return .13*(this.body.height/175)*this.scale.y;
+    const p=new T.Vector3();let min=Infinity;
+    for(let i=0;i<this.mesh.geometry.getAttribute('position').count;i++){
+      this.mesh.getVertexPosition(i,p).multiply(this.scale).applyQuaternion(this.quaternion);min=Math.min(min,p.y);
+    }
+    return -min;
+  }
+  /** Conservative capsule check for deep forearm/shin penetration into the trunk. */
+  hasBodyIntersection():boolean {
+    if(this.modelVersion===1)return false;
+    this.updateMatrixWorld(true);
+    const point=(j:Joint)=>this.worldToLocal(this.pivots[j].getWorldPosition(new T.Vector3()));
+    const trunk=new T.Line3(point('pelvis').add(new T.Vector3(0,.12,0)),point('neck'));
+    const radius=.105*(this.body.waist/100)*(1+this.body.weight/200)*(this.body.height/175);
+    for(const [a,b] of [['leftElbow','leftWrist'],['rightElbow','rightWrist'],['leftKnee','leftAnkle'],['rightKnee','rightAnkle']] as [Joint,Joint][]){
+      const start=point(a),end=point(b);
+      for(const fraction of [.25,.5,.75]){const p=start.clone().lerp(end,fraction);if(trunk.closestPointToPoint(p,true,new T.Vector3()).distanceTo(p)<radius)return true;}
+    }
+    return false;
+  }
   updateBounds() {
     if (!this.boundsDirty) return;
     this.mesh.computeBoundingSphere();this.mesh.computeBoundingBox();
@@ -129,15 +197,15 @@ export class Humanoid extends T.Group {
     const vertices = [hit.face.a,hit.face.b,hit.face.c];
     const points = vertices.map(index => this.mesh.getVertexPosition(index,new T.Vector3()));
     const bary = new T.Triangle(...points as [T.Vector3,T.Vector3,T.Vector3]).getBarycoord(this.mesh.worldToLocal(hit.point.clone()),new T.Vector3());
-    const blend = bary?.toArray() ?? [1/3,1/3,1/3], scores = new Float32Array(jointNames.length);
+    const blend = bary?.toArray() ?? [1/3,1/3,1/3], scores = new Float32Array(this.jointNames.length);
     const indices = this.mesh.geometry.getAttribute('skinIndex'), weights = this.mesh.geometry.getAttribute('skinWeight');
     vertices.forEach((vertex,i) => {
       for (let slot = 0; slot < 4; slot++) {
         const bone = indices.getComponent(vertex,slot);
-        scores[bone === 0 ? 1 : bone] += Math.max(0,blend[i]) * weights.getComponent(vertex,slot);
+        scores[this.modelVersion===1&&bone===0 ? 1 : bone] += Math.max(0,blend[i]) * weights.getComponent(vertex,slot);
       }
     });
-    return jointOf(scores.indexOf(Math.max(...scores)));
+    return this.jointOf(scores.indexOf(Math.max(...scores)));
   }
 
   highlight(joint: Joint | 'all' | null) {
@@ -149,7 +217,7 @@ export class Humanoid extends T.Group {
     for (let vertex = 0; vertex < color.count; vertex++) {
       let amount = joint === 'all' ? 1 : 0;
       if (joint && joint !== 'all') for (let slot = 0; slot < 4; slot++) {
-        if (jointOf(indices.getComponent(vertex,slot)) === joint) amount += weights.getComponent(vertex,slot);
+        if (this.jointOf(indices.getComponent(vertex,slot)) === joint) amount += weights.getComponent(vertex,slot);
       }
       color.setXYZ(vertex, 1, 1 - amount * .56, 1 - amount * .43);
     }

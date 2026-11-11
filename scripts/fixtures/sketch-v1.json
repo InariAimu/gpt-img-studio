@@ -1,0 +1,128 @@
+{
+  "version": 1,
+  "name": "构图草图",
+  "width": 1024,
+  "height": 768,
+  "background": "#ffffff",
+  "layers": [
+    {
+      "id": "9a9e4da9-ecda-42f2-9704-92f0cf0fe137",
+      "kind": "scene",
+      "name": "3D 场景",
+      "x": 0,
+      "y": 0,
+      "width": 1024,
+      "height": 768,
+      "rotation": 0,
+      "scaleX": 1,
+      "scaleY": 1,
+      "visible": true,
+      "locked": false,
+      "opacity": 1,
+      "fill": "transparent",
+      "stroke": "#ed783e",
+      "strokeWidth": 0,
+      "scene": {
+        "camera": {
+          "azimuth": 22,
+          "elevation": 12,
+          "distance": 4.4,
+          "targetY": 1.05,
+          "fov": 38
+        },
+        "figure": {
+          "visible": true,
+          "color": "#e4e5e7",
+          "x": 0,
+          "y": 0,
+          "z": 0,
+          "yaw": 0,
+          "scale": 1,
+          "pose": {
+            "torso": [
+              15,
+              0,
+              0
+            ],
+            "head": [
+              -10,
+              0,
+              0
+            ],
+            "leftArm": [
+              -30,
+              0,
+              25
+            ],
+            "rightArm": [
+              25,
+              0,
+              -15
+            ],
+            "leftElbow": [
+              -65,
+              0,
+              0
+            ],
+            "rightElbow": [
+              -25,
+              0,
+              0
+            ],
+            "leftLeg": [
+              -30,
+              0,
+              5
+            ],
+            "rightLeg": [
+              35,
+              0,
+              -5
+            ],
+            "leftKnee": [
+              30,
+              0,
+              0
+            ],
+            "rightKnee": [
+              90,
+              0,
+              0
+            ]
+          },
+          "body": {
+            "height": 175,
+            "shoulders": 100,
+            "waist": 100,
+            "hips": 100,
+            "arms": 100,
+            "legs": 100,
+            "head": 100,
+            "weight": 0
+          },
+          "modelVersion": 1
+        },
+        "ball": {
+          "visible": true,
+          "color": "#d86d39",
+          "x": 0.78,
+          "y": 1.15,
+          "z": 0.35,
+          "size": 0.22
+        },
+        "box": {
+          "visible": false,
+          "color": "#8da5ad",
+          "x": -0.8,
+          "y": 0.3,
+          "z": 0,
+          "size": 0.6
+        },
+        "ground": {
+          "visible": true,
+          "color": "#e8e7e3"
+        }
+      }
+    }
+  ]
+}

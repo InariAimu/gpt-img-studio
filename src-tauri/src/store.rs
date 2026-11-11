@@ -83,6 +83,7 @@ impl Store {
         if doc["schemaVersion"] != 1 {
             return Err("此图库的数据版本暂不受支持，请使用更新的应用版本".into());
         }
+        crate::sketch_library::migrate(&store)?;
         crate::session_delete::recover(&store.root, &doc)?;
         Ok(store)
     }
@@ -507,6 +508,7 @@ pub fn insert_imports(
 }
 
 pub fn apply_action(doc: &mut Value, action: &Value) -> Result<()> {
+    if action["type"] == "sketch_action" { return crate::sketch_library::action(doc, action); }
     match text(action, "type") {
         "set_sessions_discarded" => {
             let selected: Vec<String> = serde_json::from_value(action["sessionIds"].clone())

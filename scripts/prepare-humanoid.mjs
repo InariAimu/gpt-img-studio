@@ -42,7 +42,7 @@ const joint = (bone, endpoint = 'head') => {
   const ids = [rig.joints[rig.bones[bone][endpoint]]].flat();
   return ids.reduce((sum, i) => sum.add(vertices[i]), new Vector3()).divideScalar(ids.length);
 };
-// Eleven skin bones: pelvis plus the ten joints already stored by the sketch editor.
+// Preserve the first eleven indices; add chest, neck, clavicles, wrists and ankles.
 const names = ['pelvis', 'torso', 'head', 'leftArm', 'leftElbow', 'rightArm', 'rightElbow', 'leftLeg', 'leftKnee', 'rightLeg', 'rightKnee'];
 const parents = [-1, 0, 1, 1, 3, 1, 5, 0, 7, 0, 9];
 const origin = joint('spine05');
@@ -63,13 +63,31 @@ for (const side of ['L', 'R']) {
   centers.push(joint(`upperleg01.${side}`), joint(`lowerleg01.${side}`));
   transforms.push(new Matrix4(), new Matrix4());
 }
+// Additional rest centers use the same baked arm transforms as their parents.
+for (const [name, source, parent, transform] of [
+  ['chest','spine02',1,null], ['neck','neck01',11,null],
+  ['leftClavicle','clavicle.L',11,null], ['rightClavicle','clavicle.R',11,null],
+  ['leftWrist','wrist.L',4,4], ['rightWrist','wrist.R',6,6],
+  ['leftAnkle','foot.L',8,null], ['rightAnkle','foot.R',10,null],
+]) {
+  names.push(name);parents.push(parent);
+  const matrix=transform===null?new Matrix4():transforms[transform].clone();
+  centers.push(joint(source).applyMatrix4(matrix));transforms.push(matrix);
+}
+centers[2]=joint('head');
+parents[2]=12; parents[3]=13; parents[5]=14;
 function boneIndex(name) {
   const side = name.endsWith('.L') ? 'left' : 'right';
   if (name.startsWith('upperarm')) return names.indexOf(`${side}Arm`);
-  if (/^(lowerarm|wrist|finger)/.test(name)) return names.indexOf(`${side}Elbow`);
+  if (/^(wrist|finger)/.test(name)) return names.indexOf(`${side}Wrist`);
+  if (/^lowerarm/.test(name)) return names.indexOf(`${side}Elbow`);
   if (name.startsWith('upperleg')) return names.indexOf(`${side}Leg`);
-  if (/^(lowerleg|foot|toe)/.test(name)) return names.indexOf(`${side}Knee`);
-  if (/^(neck|head)/.test(name)) return 2;
+  if (/^(foot|toe)/.test(name)) return names.indexOf(`${side}Ankle`);
+  if (/^lowerleg/.test(name)) return names.indexOf(`${side}Knee`);
+  if (/^head/.test(name)) return 2;
+  if (/^neck/.test(name)) return 12;
+  if (/^(clavicle|shoulder)/.test(name)) return names.indexOf(`${side}Clavicle`);
+  if (/^(spine0[123]|breast)/.test(name)) return 11;
   if (/^(spine|breast|clavicle|shoulder)/.test(name)) return 1;
   if (/^(root|pelvis)/.test(name)) return 0;
   const parent = rig.bones[name]?.parent;
@@ -99,7 +117,7 @@ const minY = Math.min(...position.map(v => v.y)), maxY = Math.max(...position.ma
 const scale = 2.1 / (maxY - minY);
 const round = value => Math.round(value * 100000) / 100000;
 const asset = {
-  version: 1,
+  version: 2,
   source: `https://github.com/makehumancommunity/makehuman/tree/${revision}`,
   bones: names,
   parents,
