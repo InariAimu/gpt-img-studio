@@ -4,7 +4,7 @@ services:
     container_name: gpt-img-studio-sync
     restart: unless-stopped
     init: true
-    user: "1026:100"
+    user: "1000:1000"
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
@@ -18,7 +18,7 @@ services:
       - ./data:/data
       - ./secrets:/run/secrets:ro
     ports:
-      - "192.168.1.127:18081:8080"
+      - "127.0.0.1:8080:8080"
     networks:
       proxy:
         aliases: [gpt-img-studio-sync]
@@ -30,4 +30,4 @@ services:
 networks:
   proxy:
     external: true
-    name: nginx_reverse_proxy
+    name: reverse-proxy

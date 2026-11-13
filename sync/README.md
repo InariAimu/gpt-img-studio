@@ -16,26 +16,28 @@ cargo test --manifest-path sync/Cargo.toml --release --locked --features server 
 npm run desktop:build -- -- --locked
 ```
 
-Linux 在包含本目录的构建容器中执行 `cargo build --release --locked --features server --bin studio-sync-server`。运行镜像仅复制 Linux release 二进制，使用本目录 Dockerfile。DS1618+ 的当前内核不支持 CFS CPU 配额，因此 Compose 使用 CPU 权重与两个运行线程。Compose 中 UID/GID、宿主内网地址与现有代理网络须按部署环境调整；不挂载 Docker socket。`data/` 需对运行 UID 可写。在本机群晖上为本项目新建的 data、secrets 目录设置所有者 1026:100 和 0700；避免继承仅管理员组可访问的共享文件夹 ACL。编译缓存使用专用 Docker 卷 gpt-img-studio-sync-build-target，避免共享目录 ACL 导致 LLVM 无法判断输出文件可写。
+Linux 在包含本目录的构建容器中执行 `cargo build --release --locked --features server --bin studio-sync-server`。用本目录的 Dockerfile 将 Linux release 二进制打包进运行镜像。按部署环境调整 Compose 的 UID/GID 和代理网络。`data/` 需对运行用户可写，`secrets/` 需限制访问并以只读方式挂载。
 
 `STUDIO_SYNC_TOKENS` 指向 JSON 对象：设备 ID 映射到令牌的 SHA-256 十六进制摘要。使用密码学随机数生成每设备至少 32 字符的令牌；令牌原文只交给对应客户端。文件请求时重新读取，移除映射即可撤销设备。该文件以只读卷挂载、限制文件权限。不得提交真实令牌。
 
 接口：`GET /health`、`POST /v1/push`、`GET /v1/changes?after=N`、`HEAD/PUT/GET /v1/blobs/{sha256}.{extension}`。除 health 外均需 Bearer 令牌；push 的 deviceId 必须匹配令牌。公网必须使用 HTTPS，客户端禁止重定向；内网直连只允许显式私有 IP/本机 HTTP。
 
-## 当前 NAS 部署
+## 部署示例
 
-目标根目录 `/volume2/docker-disk2/gpt-img-studio-sync/`。`compose.yaml` 与 `data/`、`secrets/`、`backups/` 分离。公网地址 `https://gis.inariaimu.synology.me:41658`；局域网 `http://192.168.1.127:18081`。将 `nginx-server.conf` 放入现有 Nginx 的 conf.d 目录，复用 http 层的通配证书与 41658 端口映射。上线前 `nginx -t`，失败将新文件移出 conf.d，成功后 reload。旧 fox `/studio-sync` 入口暂留兼容已有客户端（`nginx-location.conf`），GitLab 仍使用 fox 根路径。
+将 `compose.yaml` 放在部署目录下，分别用 `data/`、`secrets/`、`backups/` 保存数据、凭据和备份。示例公网地址为 `https://sync.example.com`，请换成自己的域名并配置对应的 TLS 证书。Compose 将宿主机端口绑定到 `127.0.0.1:8080`，Nginx 容器通过共享代理网络访问服务。需要局域网直连时，按实际环境设置绑定地址和防火墙。
+
+将 `nginx-server.conf` 加入 Nginx 的 `conf.d`，执行 `nginx -t` 成功后再 reload。需要在现有 HTTPS 站点下提供 `/studio-sync` 路径时，可将 `nginx-location.conf` 加入对应的 `server` 块。
 
 使用 SQLite Backup API 取得一致性数据库；图片为不可变追加文件，可先备份数据库，再复制该快照引用的原图。数据库备份需保留 instance、变更序列、删除标记，并配套备份设备令牌摘要。恢复旧快照导致客户端游标回退时应停止客户端、协调恢复，不假装同步完成。同盘 backups 只是回滚材料，还应复制到另一台服务器。
 
-2026-11-11 升级后，Container Manager 项目为 `studio-sync-v2`，运行容器为 `gpt-img-studio-sync-v2`。运行配置位于 `upgrade-v2-20261111/runtime/compose.yaml`，复用原运行镜像并只读挂载 `upgrade-v2-20261111/studio-sync-server-v2` 覆盖服务二进制；保留原数据、凭据、端口和代理网络 IP。旧容器 `gpt-img-studio-sync` 已停止，配套一致性数据库及回退说明保留在 `upgrade-v2-20261111/rollback/`。SQLite 备份时数据卷需允许创建 WAL 的共享内存文件，源连接仍使用只读模式，先在容器临时目录完成备份与完整性检查再复制到共享目录。所有参与同步的客户端须升级至协议 2 版本。
+SQLite 备份时，数据卷需允许创建 WAL 的共享内存文件。可用只读源连接在容器临时目录完成备份及完整性检查，再将备份复制到目标目录。
 
 ## 接入另一台电脑
 
 使用本版本 Windows release 程序，在“设置 → 多设备同步”导入为该电脑生成的连接 JSON，然后点击“立即同步”。格式如下（真实令牌不应进入 Git）：
 
 ```json
-{"config":{"enabled":true,"url":"https://gis.inariaimu.synology.me:41658","deviceId":"pc-second","direct":true},"token":"<该设备的随机令牌>"}
+{"config":{"enabled":true,"url":"https://sync.example.com","deviceId":"pc-second","direct":true},"token":"<该设备的随机令牌>"}
 ```
 
 标题栏显示同步状态、待上传记录与冲突，可直接“立即同步”或打开同步设置。自动同步每 300 秒尝试一次；关闭自动同步仍可手动同步。手动同步先保存当前会话草稿及排队中的设置；切换窗口不会额外触发自动同步。
@@ -55,7 +57,6 @@ Linux 在包含本目录的构建容器中执行 `cargo build --release --locked
 - 打字、图片生成和自动命名期间延后自动同步；后台不重新提交模型调用。新电脑需配置同一提供商对应的 API Key；Responses 接续仍依赖提供商上下文有效。
 - 图片自动完整下载，无按需缓存/配额回收；远端预览可直接使用原图。
 - 不处理 szurubooru 导入，不包含图库部署；可在下一阶段添加独立导入队列，保持展示图库与 Studio 分离。
-- 合成 HTTP 测试材料位于 `output/sketch-library-20261111/sync-tests/`，验收后按仓库规则移入回收站。
 
 ## 草图库升级
 

@@ -5,7 +5,7 @@ import { Cloud, LoaderCircle, RefreshCw, Save } from 'lucide-react';
 import { desktop, type Studio } from './useStudio';
 
 import type { SyncConfig, SyncView } from './syncState';
-const initial:SyncConfig={enabled:false,url:'https://gis.inariaimu.synology.me:41658',deviceId:'',direct:true};
+const initial:SyncConfig={enabled:false,url:'',deviceId:'',direct:true};
 const names:Record<string,string>={sessions:'会话',workspaces:'工作区',assets:'图片',presets:'预设',jobs:'任务记录',providers:'模型提供商',sketches:'草图',sketchLibraries:'姿势库'};
 export default function SyncSettings({studio}:{studio:Studio}){
   const view=studio.sync;const [config,setConfig]=useState(initial);const [token,setToken]=useState('');

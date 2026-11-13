@@ -93,7 +93,7 @@ fn rejects_unsafe_paths_and_public_plain_http() {
     ] {
         assert!(client::normalize_url(u).is_err());
     }
-    assert!(client::normalize_url("http://192.168.1.127:18081").is_ok());
+    assert!(client::normalize_url("http://192.168.0.10:8080").is_ok());
     assert_eq!(
         client::normalize_url("https://example.com/studio-sync/").unwrap(),
         "https://example.com/studio-sync"
