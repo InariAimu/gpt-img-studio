@@ -8,7 +8,7 @@ import { waitForGeneratedImages } from './GenerationElapsed';
 import { SYNC_INTERVAL_MS, type SyncView } from './syncState';
 import { apiErrorInfo, errorSummary } from './apiErrors';
 import { browserLibrary, browserCommand } from './sketch/library';
-import type { Asset, Bootstrap, GalleryTask, GenerationRequest, Job, NetworkConfig, NetworkState, RefineResult, SessionDeletePreview, WorkspaceDeletePreview, Settings, StudioAction, StudioDocument, UsageSummary } from './types';
+import type { Asset, Bootstrap, GalleryTask, GenerationRequest, Job, NetworkConfig, NetworkState, RefineResult, SessionDeletePreview, SessionRollbackPreview, WorkspaceDeletePreview, Settings, StudioAction, StudioDocument, UsageSummary } from './types';
 
 export const desktop = isTauri();
 export interface Toast { id: number; message: string; error: boolean; detail?: string }
@@ -153,6 +153,8 @@ export function useStudio() {
     requireDesktop();
     const document = action.type === 'delete_session'
       ? await invoke<StudioDocument>('delete_session', { sessionId: action.id, referenceIds: action.referenceIds, token: action.token })
+      : action.type === 'rollback_session'
+      ? await invoke<StudioDocument>('rollback_session', { sessionId: action.id, assetId: action.assetId, token: action.token })
       : action.type === 'delete_workspace'
       ? await invoke<StudioDocument>('delete_workspace', { workspaceId: action.id, token: action.token })
       : action.type === 'delete_sessions'
@@ -185,6 +187,17 @@ export function useStudio() {
     notify('会话已删除，移除内容已送入系统回收站');
     return document;
   },[mutate,notify]);
+  const previewSessionRollback = useCallback(async (id: string, assetId: string) => {
+    requireDesktop();
+    await sessionEditors.current.get(id)?.({ type: 'flush_session' });
+    return invoke<SessionRollbackPreview>('preview_session_rollback', { sessionId: id, assetId });
+  }, [requireDesktop]);
+  const rollbackSession = useCallback(async (id: string, assetId: string, token: string) => {
+    await settingsWrites.current!.idle();
+    const action = { type: 'rollback_session', id, assetId, token };
+    const editor = sessionEditors.current.get(id);
+    return editor ? editor(action) : mutate(action);
+  }, [mutate]);
   const saveSettings = useCallback((settings: Settings, providerKeys: Record<string,string> = {}) => settingsWrites.current!.enqueue(settings, providerKeys), []);
   const previewDeleteWorkspace = useCallback(async (id:string) => {
     requireDesktop();
@@ -304,6 +317,6 @@ export function useStudio() {
   const exportUsage = useCallback(async () => { requireDesktop(); const destination=await save({title:'导出用量记录',defaultPath:'image-studio-usage.jsonl',filters:[{name:'JSON Lines',extensions:['jsonl']}]});if(destination){await invoke('export_usage',{destination});notify('用量日志已导出');} },[requireDesktop,notify]);
   const chooseDataDirectory = useCallback(async () => { requireDesktop(); return open({directory:true,multiple:false,title:'选择空的数据目录'}); },[requireDesktop]);
   const relocateData = useCallback(async (destination:string) => { requireDesktop(); await settingsWrites.current!.idle(); await invoke('relocate_data',{destination});notify('正在迁移数据并重启应用…'); },[requireDesktop,notify]);
-  return { ...boot, accept, registerSketchEditor, flushSketchEditors, apiError, setApiError, galleryTasks, galleryDraft, setGalleryDraft, requestGalleryImport, enqueueGalleryImport, controlGalleryImport, openGalleryPost, ready, loadError, toasts, settingsSaving, settingsError, sync, syncBusy, syncNow, refreshSync, notify, report, refresh, mutate, saveSettings, importImages, importClipboardImages, nameSession, exportImage, generate, generationStartedAt, refine, imageUrl, listModels, usageRecords, networkSettings, testNetworkSettings, exportUsage, chooseDataDirectory, relocateData, moveSession, registerSessionEditor, previewDeleteSession, deleteSession, previewDeleteWorkspace, deleteWorkspace, previewDeleteSessions, deleteSessions, moveSessions };
+  return { ...boot, accept, registerSketchEditor, flushSketchEditors, apiError, setApiError, galleryTasks, galleryDraft, setGalleryDraft, requestGalleryImport, enqueueGalleryImport, controlGalleryImport, openGalleryPost, ready, loadError, toasts, settingsSaving, settingsError, sync, syncBusy, syncNow, refreshSync, notify, report, refresh, mutate, saveSettings, importImages, importClipboardImages, nameSession, exportImage, generate, generationStartedAt, refine, imageUrl, listModels, usageRecords, networkSettings, testNetworkSettings, exportUsage, chooseDataDirectory, relocateData, moveSession, registerSessionEditor, previewDeleteSession, deleteSession, previewSessionRollback, rollbackSession, previewDeleteWorkspace, deleteWorkspace, previewDeleteSessions, deleteSessions, moveSessions };
 }
 export type Studio = ReturnType<typeof useStudio>;

@@ -6,10 +6,17 @@ struct Tracker {
     revision: Option<u64>,
     jobs: HashMap<String, String>,
     attention: bool,
+    unseen_failure: bool,
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Progress {
+    Idle,
+    Running,
+    Error,
 }
 #[derive(Default, Debug, PartialEq)]
 struct Effects {
-    running: Option<bool>,
+    progress: Option<Progress>,
     attention: Option<bool>,
 }
 struct Snapshot {
@@ -35,6 +42,16 @@ impl Snapshot {
     }
 }
 impl Tracker {
+    fn progress(&self) -> Progress {
+        if self.unseen_failure {
+            Progress::Error
+        } else if self.jobs.values().any(|status| status == "running") {
+            Progress::Running
+        } else {
+            Progress::Idle
+        }
+    }
+
     fn update(&mut self, next: Snapshot, focused: bool) -> Effects {
         if self
             .revision
@@ -43,20 +60,25 @@ impl Tracker {
             return Effects::default();
         }
         let initial = self.revision.is_none();
-        let was_running = self.jobs.values().any(|status| status == "running");
-        let running = next.jobs.values().any(|status| status == "running");
-        let finished = !initial
-            && next.jobs.iter().any(|(id, status)| {
-                matches!(status.as_str(), "completed" | "failed")
-                    && self
-                        .jobs
-                        .get(id)
-                        .is_some_and(|previous| previous == "running")
-            });
+        let previous_progress = self.progress();
+        let mut finished = false;
+        let mut failed = false;
+        for (id, status) in &next.jobs {
+            if self
+                .jobs
+                .get(id)
+                .is_some_and(|previous| previous == "running")
+            {
+                finished |= matches!(status.as_str(), "completed" | "failed");
+                failed |= status == "failed";
+            }
+        }
+        self.unseen_failure = !focused && (self.unseen_failure || failed);
         self.jobs = next.jobs;
         self.revision = Some(next.revision);
+        let progress = self.progress();
         let mut effects = Effects {
-            running: (initial || was_running != running).then_some(running),
+            progress: (initial || previous_progress != progress).then_some(progress),
             attention: None,
         };
         if initial || focused && self.attention {
@@ -70,8 +92,9 @@ impl Tracker {
     }
     fn focused(&mut self) -> Effects {
         self.attention = false;
+        let was_failed = std::mem::take(&mut self.unseen_failure);
         Effects {
-            running: None,
+            progress: was_failed.then(|| self.progress()),
             attention: Some(false),
         }
     }
@@ -93,14 +116,14 @@ mod native {
         let Some(window) = app.get_webview_window("main") else {
             return;
         };
-        if let Some(running) = effects.running {
+        if let Some(progress) = effects.progress {
             let _ = window.set_progress_bar(ProgressBarState {
-                status: Some(if running {
-                    ProgressBarStatus::Indeterminate
-                } else {
-                    ProgressBarStatus::None
+                status: Some(match progress {
+                    Progress::Idle => ProgressBarStatus::None,
+                    Progress::Running => ProgressBarStatus::Indeterminate,
+                    Progress::Error => ProgressBarStatus::Error,
                 }),
-                progress: None,
+                progress: (progress == Progress::Error).then_some(100),
             });
         }
         if let Some(attention) = effects.attention {
@@ -116,8 +139,8 @@ mod native {
             let Some(window) = handle.get_webview_window("main") else {
                 return;
             };
-            let focused = window.is_focused().unwrap_or(true)
-                && !window.is_minimized().unwrap_or(false);
+            let focused =
+                window.is_focused().unwrap_or(true) && !window.is_minimized().unwrap_or(false);
             let Some(state) = handle.try_state::<Taskbar>() else {
                 return;
             };
@@ -190,34 +213,34 @@ mod tests {
         assert_eq!(
             tracker.update(snapshot(0, &[]), false),
             Effects {
-                running: Some(false),
+                progress: Some(Progress::Idle),
                 attention: Some(false)
             }
         );
         assert_eq!(
             tracker
                 .update(snapshot(1, &[("a", "running"), ("b", "running")]), false)
-                .running,
-            Some(true)
+                .progress,
+            Some(Progress::Running)
         );
         assert_eq!(
             tracker.update(snapshot(2, &[("a", "completed"), ("b", "running")]), false),
             Effects {
-                running: None,
+                progress: None,
                 attention: Some(true)
             }
         );
         assert_eq!(
             tracker.update(snapshot(3, &[("a", "completed"), ("b", "failed")]), false),
             Effects {
-                running: Some(false),
+                progress: Some(Progress::Error),
                 attention: None
             }
         );
         assert_eq!(
             tracker.focused(),
             Effects {
-                running: None,
+                progress: Some(Progress::Idle),
                 attention: Some(false)
             }
         );
@@ -230,26 +253,56 @@ mod tests {
             tracker.update(snapshot(2, &[("a", "completed"), ("b", "running")]), true),
             Effects::default()
         );
-        assert_eq!(tracker.focused().running, None);
+        assert_eq!(tracker.focused().progress, None);
         assert_eq!(
-            tracker.update(snapshot(3, &[("a", "completed"), ("b", "failed")]), false),
+            tracker.update(snapshot(3, &[("a", "completed"), ("b", "failed")]), true),
             Effects {
-                running: Some(false),
+                progress: Some(Progress::Idle),
+                attention: None
+            }
+        );
+    }
+    #[test]
+    fn background_failure_stays_red_until_focus_then_restores_remaining_progress() {
+        let mut tracker = Tracker::default();
+        tracker.update(snapshot(1, &[("a", "running"), ("b", "running")]), false);
+        assert_eq!(
+            tracker.update(snapshot(2, &[("a", "failed"), ("b", "running")]), false),
+            Effects {
+                progress: Some(Progress::Error),
                 attention: Some(true)
             }
+        );
+        assert_eq!(
+            tracker.update(snapshot(3, &[("b", "running"), ("c", "running")]), false),
+            Effects::default()
+        );
+        assert_eq!(
+            tracker.focused(),
+            Effects {
+                progress: Some(Progress::Running),
+                attention: Some(false)
+            }
+        );
+        assert_eq!(
+            tracker
+                .update(snapshot(4, &[("b", "completed"), ("c", "failed")]), true)
+                .progress,
+            Some(Progress::Idle)
         );
     }
     #[test]
     fn startup_and_stale_snapshots_never_replay_old_completions() {
         let mut tracker = Tracker::default();
         assert_eq!(
-            tracker
-                .update(
-                    snapshot(8, &[("old", "completed"), ("interrupted", "interrupted")]),
-                    false
-                )
-                .attention,
-            Some(false)
+            tracker.update(
+                snapshot(8, &[("old", "failed"), ("interrupted", "interrupted")]),
+                false
+            ),
+            Effects {
+                progress: Some(Progress::Idle),
+                attention: Some(false)
+            }
         );
         tracker.update(snapshot(10, &[("new", "running")]), false);
         assert_eq!(tracker.update(snapshot(9, &[]), false), Effects::default());

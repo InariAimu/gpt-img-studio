@@ -38,6 +38,26 @@ pub(crate) fn root_id(asset: &Value) -> &str {
     }
 }
 
+pub(crate) fn protect_related_assets(assets: &[Value], protected: &mut BTreeSet<String>) {
+    loop {
+        let before = protected.len();
+        let roots: HashSet<&str> = assets
+            .iter()
+            .filter(|a| protected.contains(text(a, "id")))
+            .map(root_id)
+            .collect();
+        for asset in assets {
+            if protected.contains(text(asset, "id")) || roots.contains(root_id(asset)) {
+                protected.insert(text(asset, "id").to_owned());
+                protected.extend(references(asset));
+            }
+        }
+        if before == protected.len() {
+            break;
+        }
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Preview {
@@ -112,23 +132,7 @@ fn analyze(doc: &Value, session_id: &str) -> Result<Analysis> {
             protected.insert(text(asset, "id").to_owned());
         }
     }
-    loop {
-        let before = protected.len();
-        let roots: HashSet<String> = assets
-            .iter()
-            .filter(|a| protected.contains(text(a, "id")))
-            .map(|a| root_id(a).to_owned())
-            .collect();
-        for asset in assets {
-            if protected.contains(text(asset, "id")) || roots.contains(root_id(asset)) {
-                protected.insert(text(asset, "id").to_owned());
-                protected.extend(references(asset));
-            }
-        }
-        if before == protected.len() {
-            break;
-        }
-    }
+    protect_related_assets(assets, &mut protected);
     session_refs.retain(|asset_id| !owned.contains(asset_id));
     Ok(Analysis {
         owned,
@@ -363,6 +367,9 @@ impl Archive {
     pub fn stage_sessions(root: &Path, before: &Value, after: &Value) -> Result<Self> {
         Self::stage_scope(root, before, after, "sessions", "")
     }
+    pub fn stage_rollback(root: &Path, before: &Value, after: &Value, session_id: &str) -> Result<Self> {
+        Self::stage_scope(root, before, after, "session-tail", session_id)
+    }
     fn stage_scope(root: &Path, before: &Value, after: &Value, scope: &str, target_id: &str) -> Result<Self> {
         let session_ids: HashSet<&str> = before["sessions"].as_array().into_iter().flatten()
             .filter(|s| if scope == "workspace" { text(s,"workspaceId") == target_id } else if scope == "sessions" { find(after,"sessions",text(s,"id")).is_err() } else { text(s,"id") == target_id })
@@ -428,7 +435,9 @@ impl Archive {
         fs::create_dir_all(&parent).map_err(|e| e.to_string())?;
         let path = parent.join(format!("gpt-img-studio-{scope}-{}", id()));
         fs::create_dir(&path).map_err(|e| e.to_string())?;
-        let mut manifest = json!({"version":1,"deletedAt":now(),"scope":scope,"files":paths.iter().map(|p|p.strip_prefix(&root).unwrap().to_string_lossy().into_owned()).collect::<Vec<_>>(),"assets":deleted,"jobs":before["jobs"].as_array().into_iter().flatten().filter(|j|session_ids.contains(text(j,"sessionId"))).collect::<Vec<_>>(),"retainedAssetsBefore":before["assets"].as_array().into_iter().flatten().filter(|a|kept_ids.contains(text(a,"id")) && find(after,"assets",text(a,"id")).is_ok_and(|b| b != *a)).collect::<Vec<_>>()});
+        let kept_jobs: HashSet<&str> = after["jobs"].as_array().into_iter().flatten()
+            .map(|job| text(job, "id")).collect();
+        let mut manifest = json!({"version":1,"deletedAt":now(),"scope":scope,"files":paths.iter().map(|p|p.strip_prefix(&root).unwrap().to_string_lossy().into_owned()).collect::<Vec<_>>(),"assets":deleted,"jobs":before["jobs"].as_array().into_iter().flatten().filter(|j|session_ids.contains(text(j,"sessionId")) && !kept_jobs.contains(text(j,"id"))).collect::<Vec<_>>(),"retainedAssetsBefore":before["assets"].as_array().into_iter().flatten().filter(|a|kept_ids.contains(text(a,"id")) && find(after,"assets",text(a,"id")).is_ok_and(|b| b != *a)).collect::<Vec<_>>()});
         if scope == "workspace" {
             manifest["workspace"] = find(before,"workspaces",target_id)?.clone();
         }
@@ -513,7 +522,28 @@ pub fn recover(root: &Path, doc: &Value) -> Result<()> {
         if manifest["version"] != 1 || !manifest["files"].is_array() {
             return Err(format!("删除恢复材料无效：{}", path.display()));
         }
-        let restore = if manifest["scope"] == "sessions" {
+        let restore = if manifest["scope"] == "session-tail" {
+            let mut total = 0;
+            let mut present = 0;
+            for (field, collection) in [
+                ("jobs", "jobs"), ("assets", "assets"), ("retainedAssetsBefore", "assets"),
+            ] {
+                for old in manifest[field].as_array().ok_or("会话回退恢复材料无效")? {
+                    total += 1;
+                    let old_id = text(old, "id");
+                    if old_id.is_empty() { return Err("会话回退恢复材料缺少记录标识".into()); }
+                    if find(doc, collection, old_id).is_ok_and(|record|
+                        text(record, "sessionId") == text(old, "sessionId")
+                    ) {
+                        present += 1;
+                    }
+                }
+            }
+            if total == 0 || (present != 0 && present != total) {
+                return Err(format!("会话回退恢复状态不一致，材料已保留：{}", path.display()));
+            }
+            present == total
+        } else if manifest["scope"] == "sessions" {
             let sessions = manifest["sessions"].as_array().filter(|s| !s.is_empty()).ok_or("批量删除恢复材料无效")?;
             if sessions.iter().any(|s| text(s,"id").is_empty()) { return Err("批量删除恢复材料缺少会话标识".into()); }
             let present = sessions.iter().filter(|s| find(doc,"sessions",text(s,"id")).is_ok()).count();

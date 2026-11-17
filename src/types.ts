@@ -63,5 +63,6 @@ export interface UsageSummary { totalModelUsages: number; modelJournalPath: stri
 export interface GenerationRequest { sessionId: string; prompt: string; originalPrompt: string; referenceIds: string[]; size: string; quality: string; complexity?: string; moderation?: string; background?: string; outputFormat?: string; outputCompression?: number; imageCount?: number; frameCount?: number; frameDurationMs?: number; contextMode: ContextMode; imageSelection?: ModelSelection }
 export interface RefineResult { prompt: string; model: string }
 export interface SessionDeletePreview { token: string; removableReferences: Asset[]; preservedReferenceCount: number; removedResultCount: number; preservedResultCount: number }
+export interface SessionRollbackPreview { token: string; removedTurnCount: number; removedResultCount: number; preservedResultCount: number; hasResponse: boolean }
 export interface WorkspaceDeletePreview { token: string; sessionCount: number; referenceCount: number; removedResultCount: number; preservedResultCount: number }
 export interface StudioAction { type: string; [key: string]: unknown }

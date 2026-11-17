@@ -175,6 +175,16 @@ impl Store {
     fn delete_session_recycling(&self, session_id: &str, references: &[String], token: &str, recycle: impl FnOnce(&Path) -> Result<()>) -> Result<Value> {
         self.delete_recycling(|doc| crate::session_delete::apply(doc, session_id, references, token), |before, after| crate::session_delete::Archive::stage(&self.root, before, after, session_id), recycle)
     }
+    pub fn rollback_session(&self, session_id: &str, asset_id: &str, token: &str) -> Result<Value> {
+        self.rollback_session_recycling(session_id, asset_id, token, crate::recycle::directory)
+    }
+    fn rollback_session_recycling(&self, session_id: &str, asset_id: &str, token: &str, recycle: impl FnOnce(&Path) -> Result<()>) -> Result<Value> {
+        self.delete_recycling(
+            |doc| crate::session_rollback::apply(doc, session_id, asset_id, token),
+            |before, after| crate::session_delete::Archive::stage_rollback(&self.root, before, after, session_id),
+            recycle,
+        )
+    }
     pub fn delete_workspace(&self, workspace_id: &str, token: &str) -> Result<Value> {
         self.delete_workspace_recycling(workspace_id, token, crate::recycle::directory)
     }
@@ -1011,6 +1021,34 @@ mod tests {
         assert_eq!(restored,before);
         assert_eq!(fs::read(store.root.join("assets/output.png")).unwrap(),b"assets/output.png");
         assert_eq!(fs::read(store.root.join("assets/private.png")).unwrap(),b"assets/private.png");
+    }
+    #[test]
+    fn session_rollback_recycle_failure_restores_both_the_files_and_response_pointer() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../output/session-turn-rollback-20261117/store-tests").join(id());
+        let store = Store::open(root).unwrap();
+        let before = store.change(|doc| {
+            *doc = crate::session_rollback::tests::document();
+            Ok(())
+        }).unwrap();
+        let path = store.root.join("assets/private.png");
+        fs::write(&path, b"test-result").unwrap();
+        let preview = serde_json::to_value(crate::session_rollback::preview(&before, "session", "first").unwrap()).unwrap();
+        let token = text(&preview, "token");
+        let error = store.rollback_session_recycling("session", "first", token, |archive| {
+            assert!(!path.exists());
+            assert!(archive.join("assets/private.png").exists());
+            let manifest: Value = serde_json::from_slice(&fs::read(archive.join("session.json")).unwrap()).unwrap();
+            assert_eq!(manifest["scope"], "session-tail");
+            assert_eq!(manifest["jobs"].as_array().unwrap().len(), 2);
+            assert_eq!(manifest["session"]["lastResponseId"], "resp-later");
+            Err("simulated recycle failure".into())
+        }).unwrap_err();
+        assert!(error.contains("删除已取消并恢复"));
+        let mut restored = store.read().unwrap();
+        restored["revision"] = before["revision"].clone();
+        assert_eq!(restored, before);
+        assert_eq!(fs::read(path).unwrap(), b"test-result");
     }
     #[cfg(windows)]
     #[test]

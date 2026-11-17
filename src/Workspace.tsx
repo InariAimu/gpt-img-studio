@@ -1,5 +1,6 @@
 import { OptionSelect } from './OptionSelect';
 import SessionDiscardButton from './SessionDiscardButton';
+import SessionRollbackDialog from './SessionRollbackDialog';
 import ErrorDetails from './ErrorDetails';
 import { errorSummary } from './apiErrors';
 import ReferencePicker from './ReferencePicker';
@@ -7,15 +8,39 @@ import UserMessage from './UserMessage';
 import ImageSurface from './ImageSurface';
 import GenerationElapsed, { preparingGeneratedImage } from './GenerationElapsed';
 import { useEffect, useMemo, useRef, useState, type ClipboardEvent } from 'react';
-import { Aperture, ArrowUp, Check, Columns2, FolderInput, ImagePlus, ListTree, LoaderCircle, MessageSquare, Plus, SlidersHorizontal, Sparkles, Trash2, WandSparkles, X } from 'lucide-react';
+import { Aperture, ArrowUp, Check, Columns2, FolderInput, ImagePlus, ListTree, LoaderCircle, MessageSquare, Plus, RotateCcw, SlidersHorizontal, Sparkles, Trash2, WandSparkles, X } from 'lucide-react';
 import { AssetCard, Empty, PromptDetails, ResultInformation, timeLabel } from './components';
-import type { Asset, ContextMode, ModelSelection, Session } from './types';
+import type { Asset, ContextMode, Job, ModelSelection, Session } from './types';
 import { desktop, type Studio } from './useStudio';
 import { imageConnection, providerSettings } from './modelProviders';
 import { availableQualities, extendedSizes, flexibleSizes, qualityOptions, sizeCaption, standardSizes, validateImageSize } from './imageOptions';
 
 function OptionHelp({ text }: { text: string }) {
   return <span className="option-help-tip"><button type="button" className="option-help-button" aria-label={text}>?</button><span role="tooltip" className="option-help-popup">{text}</span></span>;
+}
+
+function compareTurns(a: { createdAt: string; id: string }, b: { createdAt: string; id: string }) {
+  const x = a.createdAt === b.createdAt ? a.id : a.createdAt;
+  const y = a.createdAt === b.createdAt ? b.id : b.createdAt;
+  return x === y ? 0 : x < y ? -1 : 1;
+}
+
+function completedTurns(assets: Asset[], jobs: Job[]) {
+  const unlinked = new Map(assets.map(asset => [asset.id, asset]));
+  const turns: { order: Job | Asset; job?: Job; assets: Asset[] }[] = [];
+  for (const job of jobs) {
+    const results: Asset[] = [];
+    for (const id of job.assetIds) {
+      const asset = unlinked.get(id);
+      if (asset) {
+        results.push(asset);
+        unlinked.delete(id);
+      }
+    }
+    if (results.length) turns.push({ order: job, job, assets: results });
+  }
+  for (const asset of unlinked.values()) turns.push({ order: asset, assets: [asset] });
+  return turns.sort((a, b) => compareTurns(a.order, b.order));
 }
 
 export default function Workspace({ studio, session, onWorkspace, onOpen, onBranch, onCopyInputs, onPreset, onSettings, onMove, onDelete }: { studio: Studio; session: Session; onWorkspace: (workspaceId:string)=>void; onOpen: (id: string, scopeIds?:string[]) => void; onBranch: (asset: Asset) => void; onCopyInputs: (asset: Asset) => void; onPreset: (asset: Asset) => void; onSettings: () => void; onMove: (sessionId:string)=>void; onDelete: (sessionId:string)=>void }) {
@@ -50,6 +75,7 @@ export default function Workspace({ studio, session, onWorkspace, onOpen, onBran
   const [structuring, setStructuring] = useState(false);
   const [candidate, setCandidate] = useState<{ prompt: string; model: string; source: string } | null>(null);
   const [generating, setGenerating] = useState(false);
+  const [rollback, setRollback] = useState<{ assetId: string; round: number } | null>(null);
   const [compareIds, setCompareIds] = useState<string[]>([]);
   const threadRef = useRef<HTMLDivElement>(null);
   const latest = useRef({ draft, original, referenceIds, context, size, quality, complexity, moderation, background, outputFormat, outputCompression, imageCount, frameCount, frameDurationMs, imageSelection });
@@ -57,9 +83,11 @@ export default function Workspace({ studio, session, onWorkspace, onOpen, onBran
   editorBusy.current=pasting||refining||structuring||generating;
   latest.current = { draft, original, referenceIds, context, size, quality, complexity, moderation, background, outputFormat, outputCompression, imageCount, frameCount, frameDurationMs, imageSelection };
   const sessionAssets = useMemo(() => studio.document.assets.filter(a => a.sessionId === session.id).sort((a, b) => a.createdAt.localeCompare(b.createdAt)), [studio.document.assets, session.id]);
+  const sessionJobs = useMemo(() => studio.document.jobs.filter(job => job.sessionId === session.id).sort(compareTurns), [studio.document.jobs, session.id]);
+  const turns = useMemo(() => completedTurns(sessionAssets, sessionJobs), [sessionAssets, sessionJobs]);
   const referenceAssets = referenceIds.map(id => studio.document.assets.find(a => a.id === id)).filter((a): a is Asset => !!a);
-  const runningJob = studio.document.jobs.find(j => j.sessionId === session.id && j.status === 'running');
-  const latestJob=studio.document.jobs.find(j=>j.sessionId===session.id);
+  const runningJob = sessionJobs.find(job => job.status === 'running');
+  const latestJob = sessionJobs.at(-1);
   const failedJob=latestJob&&['failed','interrupted'].includes(latestJob.status)?latestJob:undefined;
   const workspace = studio.document.workspaces.find(w => w.id === session.workspaceId);
   const settings=providerSettings(studio.document.settings);
@@ -160,7 +188,11 @@ export default function Workspace({ studio, session, onWorkspace, onOpen, onBran
       const document=await studio.mutate(action);
       const current=document.sessions.find(s=>s.id===session.id);
       removed=!current;
-      if(current){latest.current={...value,referenceIds:current.referenceIds};setReferenceIds(current.referenceIds);}
+      if(current){
+        latest.current={...value,referenceIds:current.referenceIds,context:current.contextMode};
+        setReferenceIds(current.referenceIds);
+        setContext(current.contextMode);
+      }
       return document;
     } finally {moveInProgress.current=removed;}
   }),[session.id,studio.registerSessionEditor,studio.mutate]);
@@ -251,10 +283,28 @@ export default function Workspace({ studio, session, onWorkspace, onOpen, onBran
         <div className="thread-scroll" ref={threadRef}>
           {view === 'conversation' && <div className="conversation-content">
             {!sessionAssets.length && !runningJob && <Empty title="从一个想法开始" description="添加参考图，写下 Prompt。生成结果和每一次修改都会留在这里。" icon={<Sparkles />} />}
-            {sessionAssets.map((asset, index) => { const job=studio.document.jobs.find(job=>job.assetIds.includes(asset.id)); const startedAt=studio.generationStartedAt(job); return <article className="conversation-turn" key={asset.id}><div className="turn-heading"><span className="avatar user-avatar">你</span><span>{timeLabel(asset.createdAt)}</span><span className="turn-number">第 {index + 1} 次生成</span></div><UserMessage text={asset.originalPrompt||asset.submittedPrompt||'导入的图片'} referenceIds={asset.referenceIds} assets={studio.document.assets} imageUrl={studio.imageUrl} onOpen={onOpen}/><div className="assistant-heading"><span className="assistant-mark"><Sparkles size={13} /></span><span>GPT Image Studio</span><span className="muted">{asset.demo ? '设计示例' : job&&preparingGeneratedImage(job,startedAt) ? '正在加载图片' : '生成完成'}{!asset.demo&&<GenerationElapsed job={job} startedAt={startedAt}/>}</span></div>
-              <div className="result-card"><button className="conversation-image" aria-label={`放大 ${asset.title}`} onClick={() => onOpen(asset.id)}><ImageSurface src={studio.imageUrl(asset)} alt={asset.title} width={asset.width} height={asset.height} noUpscale loading={startedAt!==undefined?'eager':'lazy'} /></button>
-              <ResultInformation asset={asset} studio={studio} expanded onOpen={() => onOpen(asset.id)} onBranch={() => onBranch(asset)} onCopyInputs={()=>onCopyInputs(asset)} onPreset={() => onPreset(asset)} /></div>
-            </article>;})}
+            {turns.map(({ order, job, assets }, index) => {
+              const first = assets[0];
+              const round = index + 1;
+              const startedAt = studio.generationStartedAt(job);
+              const hasLater = round < turns.length || !!latestJob && compareTurns(latestJob, order) > 0;
+              const canRollback = desktop && !first.demo && !first.referenceOnly && first.model !== '本地导入' && hasLater;
+              return <article className="conversation-turn" key={order.id}>
+                <div className="turn-heading">
+                  <span className="avatar user-avatar">你</span><span>{timeLabel(order.createdAt)}</span><span className="turn-number">第 {round} 次生成</span>
+                  {canRollback && <button type="button" className="button ghost small turn-rollback"
+                    aria-label={`回退到第 ${round} 轮`} disabled={!!runningJob || naming || editorBusy.current || session.titleStatus === 'pending' || studio.syncBusy || !!studio.sync?.status.running || !!studio.sync?.status.pausedForGallery}
+                    onClick={() => setRollback({ assetId: first.id, round })}><RotateCcw />回退到此轮</button>}
+                </div>
+                <UserMessage text={job?.originalPrompt || first.originalPrompt || job?.prompt || first.submittedPrompt || '导入的图片'}
+                  referenceIds={job?.referenceIds ?? first.referenceIds} assets={studio.document.assets} imageUrl={studio.imageUrl} onOpen={onOpen}/>
+                <div className="assistant-heading"><span className="assistant-mark"><Sparkles size={13} /></span><span>GPT Image Studio</span><span className="muted">{first.demo ? '设计示例' : job&&preparingGeneratedImage(job,startedAt) ? '正在加载图片' : '生成完成'}{!first.demo&&<GenerationElapsed job={job} startedAt={startedAt}/>}</span></div>
+                {assets.map(asset => <div className="result-card" key={asset.id}>
+                  <button className="conversation-image" aria-label={`放大 ${asset.title}`} onClick={() => onOpen(asset.id)}><ImageSurface src={studio.imageUrl(asset)} alt={asset.title} width={asset.width} height={asset.height} noUpscale loading={startedAt!==undefined?'eager':'lazy'} /></button>
+                  <ResultInformation asset={asset} studio={studio} expanded onOpen={() => onOpen(asset.id)} onBranch={() => onBranch(asset)} onCopyInputs={()=>onCopyInputs(asset)} onPreset={() => onPreset(asset)} />
+                </div>)}
+              </article>;
+            })}
             {runningJob&&<article className="conversation-turn"><div className="turn-heading"><span className="avatar user-avatar">你</span><span>{timeLabel(runningJob.createdAt)}</span><span className="turn-number">正在生成</span></div><UserMessage text={runningJob.originalPrompt||runningJob.prompt} referenceIds={runningJob.referenceIds} assets={studio.document.assets} imageUrl={studio.imageUrl} onOpen={onOpen}/><div className="pending-generation"><LoaderCircle className="spin"/><div>正在生成图片<GenerationElapsed job={runningJob} startedAt={studio.generationStartedAt(runningJob)}/><p>可以切换页面，任务会继续运行。</p></div></div></article>}
             {failedJob&&<article className="conversation-turn"><div className="turn-heading"><span className="avatar user-avatar">你</span><span>{timeLabel(failedJob.createdAt)}</span><span className="turn-number">未完成</span></div><UserMessage text={failedJob.originalPrompt||failedJob.prompt} referenceIds={failedJob.referenceIds} assets={studio.document.assets} imageUrl={studio.imageUrl} onOpen={onOpen}/><div className="generation-error"><span>最近一次任务未完成</span><ErrorDetails error={failedJob.error || "任务未完成"} /><button className="button secondary small" onClick={() => { setDraft(failedJob.prompt); setOriginal(failedJob.originalPrompt || failedJob.prompt); setReferenceIds(failedJob.referenceIds || []); setContext(failedJob.contextMode || 'new'); if(failedJob.imageSelection)setImageSelection(failedJob.imageSelection); }}>重新载入此任务的输入</button></div></article>}
           </div>}
@@ -293,5 +343,9 @@ export default function Workspace({ studio, session, onWorkspace, onOpen, onBran
       </section>
     </div>
     {picking && <ReferencePicker studio={studio} workspaceId={session.workspaceId} selectedIds={referenceIds} onChange={setReferenceIds} onImport={importReferences} onClose={()=>setPicking(false)}/>}
+    {rollback && <SessionRollbackDialog studio={studio} sessionId={session.id} assetId={rollback.assetId} round={rollback.round}
+      onClose={() => setRollback(null)}
+      onRolledBack={() => { setRollback(null); requestAnimationFrame(() => textareaRef.current?.focus()); }}
+    />}
   </>;
 }

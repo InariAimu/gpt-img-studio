@@ -4,6 +4,7 @@ mod provider;
 mod providers;
 mod session_move;
 mod session_delete;
+mod session_rollback;
 mod workspace_delete;
 mod recycle;
 mod storage;
@@ -114,6 +115,16 @@ fn preview_session_delete(store: State<'_, Store>, session_id: String) -> Result
 #[tauri::command]
 fn delete_session(app: tauri::AppHandle, store: State<'_, Store>, session_id: String, reference_ids: Vec<String>, token: String) -> Result<Value> {
     let result = store.delete_session(&session_id, &reference_ids, &token);
+    if let Ok(document) = store.read() { changed(&app, document); }
+    result
+}
+#[tauri::command]
+fn preview_session_rollback(store: State<'_, Store>, session_id: String, asset_id: String) -> Result<session_rollback::Preview> {
+    session_rollback::preview(&store.read()?, &session_id, &asset_id)
+}
+#[tauri::command]
+fn rollback_session(app: tauri::AppHandle, store: State<'_, Store>, session_id: String, asset_id: String, token: String) -> Result<Value> {
+    let result = store.rollback_session(&session_id, &asset_id, &token);
     if let Ok(document) = store.read() { changed(&app, document); }
     result
 }
@@ -754,6 +765,8 @@ pub fn run() {
             dispatch,
             preview_session_delete,
             delete_session,
+            preview_session_rollback,
+            rollback_session,
             preview_workspace_delete,
             delete_workspace,
             preview_sessions_delete,
