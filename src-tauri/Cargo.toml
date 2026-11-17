@@ -30,7 +30,7 @@ sha1 = "0.10"
 uuid = { version = "1", features = ["v4"] }
 chrono = "0.4"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
-keyring = { version = "3", features = ["windows-native"] }
+keyring = { version = "3", features = ["apple-native", "windows-native"] }
 rust_decimal = "1"
 studio-sync = { path = "../sync" }
 resvg = { version = "=0.45.1", default-features = false, features = ["text", "system-fonts"] }
