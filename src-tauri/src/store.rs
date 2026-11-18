@@ -884,6 +884,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let store = Store::open(root).unwrap();
         store.change(|doc| { *doc = crate::session_delete::tests::document(); Ok(()) }).unwrap();
+        crate::sketch_library::migrate(&store).unwrap();
         for path in ["assets/output.png","thumbnails/output.webp","assets/private.png","thumbnails/private.webp"] {
             fs::write(store.root.join(path), path.as_bytes()).unwrap();
         }
@@ -1050,7 +1051,7 @@ mod tests {
         assert_eq!(restored, before);
         assert_eq!(fs::read(path).unwrap(), b"test-result");
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     #[test]
     fn session_delete_recycles_only_unshared_files_and_keeps_a_recovery_manifest() {
         let store = deletion_store();
@@ -1083,7 +1084,7 @@ mod tests {
         assert_eq!(store.read().unwrap(),before);
         assert!(store.root.join("assets/output.png").exists());
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     #[test]
     fn session_delete_interrupted_before_commit_restores_files_on_reopen() {
         let store = deletion_store();
@@ -1101,7 +1102,7 @@ mod tests {
         assert_eq!(fs::read(reopened.root.join("assets/private.png")).unwrap(),b"assets/private.png");
         assert!(!archive_path.exists());
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     #[test]
     fn session_delete_interrupted_after_commit_finishes_recycling_on_reopen() {
         let store = deletion_store();

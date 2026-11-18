@@ -1315,6 +1315,8 @@ dependencies = [
  "hyper-util",
  "image",
  "keyring",
+ "objc2",
+ "objc2-foundation",
  "reqwest 0.12.28",
  "resvg",
  "rusqlite",

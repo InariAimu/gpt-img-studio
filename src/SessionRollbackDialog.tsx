@@ -49,7 +49,7 @@ export default function SessionRollbackDialog({ studio, sessionId, assetId, roun
       <div className="modal-content">
         {!preview && !error && <p role="status" className="delete-session-notice"><LoaderCircle size={14} className="spin" />正在检查轮次和图片引用…</p>}
         {preview && <>
-          <p className="modal-description">保留第 {round} 轮及之前的内容，将之后 {preview.removedTurnCount} 轮的对话记录和 {preview.removedResultCount} 张生成图片移入 Windows 回收站。</p>
+          <p className="modal-description">保留第 {round} 轮及之前的内容，将之后 {preview.removedTurnCount} 轮的对话记录和 {preview.removedResultCount} 张生成图片移入系统回收站。</p>
           {preview.preservedResultCount > 0 && <p className="delete-session-notice">另有 {preview.preservedResultCount} 张仍在使用的图片会保留为参考素材。</p>}
           <p className="delete-session-notice">{preview.hasResponse ? '回退后可在原会话输入新 Prompt，接续保留的结果。' : '这一轮没有 Responses 上下文，可以选用保留的图片作为参考图继续创作。'}</p>
         </>}

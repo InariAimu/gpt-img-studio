@@ -78,7 +78,22 @@ pub fn directory(path: &Path) -> Result<()> {
         .join()
         .map_err(|_| "回收站操作中断".to_string())?
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::rc::autoreleasepool;
+        use objc2_foundation::{NSFileManager, NSURL};
+
+        if !std::fs::symlink_metadata(path).map_err(|e| e.to_string())?.is_dir() {
+            return Err("回收目标不是目录".into());
+        }
+        autoreleasepool(|_| {
+            let url = NSURL::from_directory_path(path).ok_or("无法读取回收目录路径")?;
+            NSFileManager::defaultManager()
+                .trashItemAtURL_resultingItemURL_error(&url, None)
+                .map_err(|e| e.to_string())
+        })
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = path;
         Err("当前平台暂不支持安全移入回收站".into())

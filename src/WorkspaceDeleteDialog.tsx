@@ -16,7 +16,7 @@ export default function WorkspaceDeleteDialog({studio,workspaceId,initialPreview
       <p className="modal-description">此工作区当前有 <strong>{preview.sessionCount} 个会话（Session）</strong>，关联 <strong>{preview.referenceCount} 张参考图</strong>（去重）。是否删除？</p>
       <p className="delete-session-notice">将删除工作区、其中的全部会话和任务记录，以及 {preview.removedResultCount} 张生成图片。参考图全部保留，可继续从参考图库使用。</p>
       {preview.preservedResultCount>0&&<p className="delete-session-notice">另有 {preview.preservedResultCount} 张生成图片被其他会话、参考图库或预设使用，将保留为参考素材。</p>}
-      <p className="delete-session-notice">移除的记录和图片会打包送入 Windows 回收站。</p>
+      <p className="delete-session-notice">移除的记录和图片会打包送入系统回收站。</p>
     </>}
     {error&&<div role="alert"><p className="option-error">{error}</p><button className="button secondary small" type="button" disabled={busy} onClick={()=>void inspect()}><RefreshCw/>重新检查数量</button></div>}
   </div><footer className="modal-footer"><button className="button secondary" type="button" disabled={busy} onClick={onClose}>取消</button><button className="button danger" type="submit" disabled={!preview||busy}>{busy?<LoaderCircle className="spin"/>:<Trash2/>}{busy?'正在处理':'删除工作区'}</button></footer></form></Modal>;
