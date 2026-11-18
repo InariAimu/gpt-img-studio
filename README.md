@@ -129,6 +129,8 @@ npm run desktop:build -- -- --locked
 
 输出位置：`src-tauri/target/release/gpt-img-studio.exe`。
 
+在 macOS 上运行同一构建命令，产物为 `src-tauri/target/release/bundle/macos/GPT Image Studio.app`。从这个应用包启动即可在 Dock 显示 Studio 图标。
+
 `npm run dev` 可预览界面；文件导入、持久化和模型调用需要桌面版。应用采用桌面宽窗口布局，默认窗口为 1280 × 800，最小为 1000 × 720 逻辑像素。
 
 项目仍在快速迭代，目前以 Windows 为主要支持平台，暂未提供安装器、应用签名和自动更新。

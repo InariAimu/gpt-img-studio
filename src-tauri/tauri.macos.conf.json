@@ -1,6 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "bundle": {
+    "active": true,
+    "targets": ["app"],
     "icon": ["icons/icon-macos.icns", "icons/icon-macos.png"]
   }
 }

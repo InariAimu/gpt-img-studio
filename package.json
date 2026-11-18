@@ -9,7 +9,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1",
     "desktop": "tauri dev",
-    "desktop:build": "tauri build --no-bundle",
+    "desktop:build": "tauri build",
     "tauri": "tauri"
   },
   "dependencies": {
