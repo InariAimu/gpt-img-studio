@@ -13,8 +13,26 @@ export function providerSettings(settings: Settings): Settings & { providers: Mo
 }
 export function roleModel(settings: Settings, role: ModelRole) {
   const s=providerSettings(settings), selection=s.modelAssignments[role];
-  const provider=s.providers.find(p=>p.id===selection.providerId);
-  return {provider,model:provider?.models.find(m=>m.id===selection.modelId)};
+  const provider=s.providers.find(p=>p.id===selection?.providerId);
+  return {provider,model:provider?.models.find(m=>m.id===selection?.modelId)};
+}
+
+type ConfiguredSettings = ReturnType<typeof providerSettings>;
+const modelRoles: ModelRole[] = ['image', 'imageMain', 'refine', 'naming'];
+
+export function modelsForRole(settings: ConfiguredSettings, provider: ModelProvider, role: ModelRole) {
+  const responsesMain = role === 'imageMain' && settings.generation.apiMode === 'responses';
+  if (responsesMain && provider.id !== settings.modelAssignments.image?.providerId) return [];
+  return provider.models.filter(model => model.kind === (role === 'image' ? 'image' : 'text')
+    && (!responsesMain || model.protocol === 'responses'));
+}
+
+export function invalidModelAssignments(settings: ConfiguredSettings) {
+  return modelRoles.filter(role => {
+    const selection = settings.modelAssignments[role];
+    const provider = settings.providers.find(provider => provider.id === selection?.providerId);
+    return !provider || !modelsForRole(settings, provider, role).some(model => model.id === selection.modelId);
+  });
 }
 export function imageConnection(settings: Settings, override?: ModelSelection | null) {
   const configured=providerSettings(settings),selection=override??configured.modelAssignments.image;

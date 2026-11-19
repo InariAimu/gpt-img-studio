@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { invalidModelAssignments, modelsForRole, textModel } from '../src/modelProviders.ts';
 import { SettingsWrites } from '../src/settingsWrites.ts';
 
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
@@ -53,4 +54,28 @@ test('credential writes retain the endpoint snapshot and finish after navigation
   await queue.idle();
   await Promise.all([a, b]);
   assert.deepEqual(seen, [{ settings: { endpoint: 'first' }, keys: { provider: 'test-only-key' } }, { settings: { endpoint: 'second' }, keys: {} }]);
+});
+
+test('default model repair requires all invalid assignments to be replaced', () => {
+  const image = { providerId: 'image-provider', modelId: 'image' };
+  const missing = { providerId: 'image-provider', modelId: 'removed-text' };
+  const replacement = { providerId: 'image-provider', modelId: 'responses-text' };
+  const chat = { providerId: 'text-provider', modelId: 'chat-text' };
+  const settings = {
+    generation: { apiMode: 'responses' },
+    providers: [
+      { id: image.providerId, models: [{ ...textModel(image.modelId), kind: 'image' }, textModel(replacement.modelId)] },
+      { id: chat.providerId, models: [textModel(chat.modelId, 'chat_completions')] },
+    ],
+    modelAssignments: { image, imageMain: missing, naming: missing, refine: missing },
+  };
+
+  assert.deepEqual(invalidModelAssignments(settings), ['imageMain', 'refine', 'naming']);
+  settings.modelAssignments.naming = chat;
+  settings.modelAssignments.refine = replacement;
+  assert.deepEqual(invalidModelAssignments(settings), ['imageMain']);
+  assert.deepEqual(modelsForRole(settings, settings.providers[1], 'imageMain'), []);
+  settings.modelAssignments.imageMain = replacement;
+  assert.deepEqual(invalidModelAssignments(settings), []);
+  assert.equal(settings.modelAssignments.image, image);
 });
