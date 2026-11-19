@@ -7,8 +7,9 @@ import { ArrowDownToLine, ArrowUpRight, Check, CircleAlert, CircleCheck, Clock3,
 import { AssetCard, AssetInspector, Empty, Modal, timeLabel } from './components';
 import { Lightbox } from './Lightbox';
 import { messageReferences } from './messageReferences';
-import { assetStackKey, stackAssets } from './assetStacks';
+import { assetStackKey, countAssetStacks, stackAssets } from './assetStacks';
 import { desktop, useStudio, type Studio } from './useStudio';
+import { missingThumbnailKey, useGalleryThumbnails } from './useGalleryThumbnails';
 import Workspace from './Workspace';
 import WorkspaceTree from './WorkspaceTree';
 import Settings, { type SettingsTab } from './Settings';
@@ -66,6 +67,10 @@ export default function App() {
   const workspaceGallery=page==='workspace-gallery'&&!!currentWorkspace.id;
   const isImageGallery=page==='gallery'||workspaceGallery;
   const isGallery=isImageGallery||page==='references';
+  const trackThumbnails = desktop && studio.ready && isGallery;
+  const failedThumbnails = useGalleryThumbnails(galleryPanelRef, trackThumbnails, studio.prepareAssetThumbnails);
+  const sessionsById = useMemo(() => new Map(doc.sessions.map(session => [session.id, session])), [doc.sessions]);
+  const workspacesById = useMemo(() => new Map(doc.workspaces.map(workspace => [workspace.id, workspace])), [doc.workspaces]);
   useEffect(()=>{if(page==='workspace-gallery'&&!currentWorkspace.id)setPage('gallery');},[page,currentWorkspace.id]);
   const galleryScopeId=workspaceGallery?currentWorkspace.id:null;
   useEffect(()=>{setSelecting(false);setSelectedSessions([]);},[page,galleryScopeId]);
@@ -160,13 +165,18 @@ export default function App() {
       if (filter === 'generated' && !isGeneratedAsset(asset)) return false;
       if (filter === 'imported' && asset.model !== '本地导入') return false;
       if (!workspaceGallery && galleryWorkspace !== 'all' && asset.workspaceId !== galleryWorkspace) return false;
-      const workspace = doc.workspaces.find(w => w.id === asset.workspaceId);
-      const session = doc.sessions.find(s => s.id === asset.sessionId);
+      const workspace = workspacesById.get(asset.workspaceId);
+      const session = sessionsById.get(asset.sessionId);
       if(isImageGallery&&!galleryView.showDiscarded&&session?.discarded)return false;
       return !normalized || `${asset.title} ${session?.title || ''} ${asset.originalPrompt} ${asset.submittedPrompt} ${workspace?.name || ''}`.toLowerCase().includes(normalized);
     });
     return stack && isImageGallery ? stackAssets(result) : result.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  }, [doc.assets, doc.workspaces, doc.sessions, query, page, showSamples, filter, galleryWorkspace, stack, referenceTab, workspaceGallery, galleryScopeId, isImageGallery, galleryView.showDiscarded]);
+  }, [doc.assets, workspacesById, sessionsById, query, page, showSamples, filter, galleryWorkspace, stack, referenceTab, workspaceGallery, galleryScopeId, isImageGallery, galleryView.showDiscarded]);
+  const stackCounts = useMemo(() => {
+    if (!stack || !isImageGallery) return undefined;
+    const scope = galleryScopeId ? doc.assets.filter(asset => asset.workspaceId === galleryScopeId && isGeneratedAsset(asset)) : doc.assets;
+    return countAssetStacks(scope);
+  }, [doc.assets, galleryScopeId, isImageGallery, stack]);
   useLayoutEffect(()=>{
     if(page==='workspace')return;
     // Only the immediate session round trip restores a position, not workspace switching.
@@ -193,7 +203,23 @@ export default function App() {
   const selectedImageCount=doc.assets.filter(a=>selectedSessionIds.includes(a.sessionId)&&isGeneratedAsset(a)).length;
   function toggleSession(id:string){if(workspaceSessionIds.has(id))setSelectedSessions(ids=>ids.includes(id)?ids.filter(value=>value!==id):[...ids,id]);}
   const discardedFilter=<label className="sample-toggle discarded-filter"><input type="checkbox" checked={galleryView.showDiscarded} onChange={e=>setGalleryView(current=>({...current,showDiscarded:e.target.checked}))}/>显示废弃</label>;
-  const renderAsset=(asset:Asset)=><AssetCard key={asset.id} asset={asset} studio={studio} title={isImageGallery ? doc.sessions.find(session=>session.id===asset.sessionId)?.title : undefined} showFormatBadge={workspaceGallery} showSubtitle={!isImageGallery} wall={isImageGallery&&galleryView.mode==='wall'} selecting={workspaceGallery&&selecting} active={workspaceGallery&&selecting?selectedSessionIds.includes(asset.sessionId):page==='references' ? asset.id===selectedId : undefined} versions={stack&&isImageGallery ? doc.assets.filter(a=>assetStackKey(a)===assetStackKey(asset)&&(!workspaceGallery||(a.workspaceId===galleryScopeId&&isGeneratedAsset(a)))).length : 1} onSelect={() => { if(workspaceGallery&&selecting)toggleSession(asset.sessionId); else if (!isImageGallery) setSelectedId(asset.id); else if (doc.sessions.some(session=>session.id===asset.sessionId)) openSession(asset.sessionId); else openImage(asset.id); }} onOpen={page==='references' ? ()=>openImage(asset.id) : undefined} />;
+  function renderAsset(asset: Asset) {
+    const session = sessionsById.get(asset.sessionId);
+    const thumbnailKey = trackThumbnails ? missingThumbnailKey(asset) : undefined;
+    return <AssetCard key={asset.id} asset={asset} studio={studio}
+      title={isImageGallery ? session?.title : undefined} discarded={session?.discarded === true}
+      workspaceName={workspacesById.get(asset.workspaceId)?.name || '本地导入'}
+      showFormatBadge={workspaceGallery} showSubtitle={!isImageGallery} wall={isImageGallery && galleryView.mode === 'wall'}
+      selecting={workspaceGallery && selecting} active={workspaceGallery && selecting ? selectedSessionIds.includes(asset.sessionId) : page === 'references' ? asset.id === selectedId : undefined}
+      versions={stackCounts?.get(assetStackKey(asset)) ?? 1}
+      pendingThumbnailKey={thumbnailKey && !failedThumbnails.has(thumbnailKey) ? thumbnailKey : undefined}
+      onSelect={() => {
+        if (workspaceGallery && selecting) toggleSession(asset.sessionId);
+        else if (!isImageGallery) setSelectedId(asset.id);
+        else if (session) openSession(session.id);
+        else openImage(asset.id);
+      }} onOpen={page === 'references' ? () => openImage(asset.id) : undefined} />;
+  }
 
   return <div className="app-shell">
     <Titlebar studio={studio} onSyncSettings={()=>{setSettingsTab('sync');setPage('settings');}} />

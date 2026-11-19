@@ -307,6 +307,7 @@ pub async fn run(app: &tauri::AppHandle) -> Result<Value> {
             return Err("正在编辑，离开输入框后继续同步；已下载原图会保留".into());
         }
         let document = store.finish_sync(exchange)?;
+        crate::thumbnails::warm_synced(app, &doc, &document);
         let _ = app.emit("studio:changed", document);
         *runtime.status.lock().map_err(|e| e.to_string())? = Status {
             last_success: Some(now()),

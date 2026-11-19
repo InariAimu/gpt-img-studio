@@ -17,6 +17,7 @@ mod sketch;
 mod sketch_library;
 mod gallery;
 mod gallery_import;
+mod thumbnails;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use provider::GenerationRequest;
 use serde::Deserialize;
@@ -756,6 +757,7 @@ pub fn run() {
             open_gallery_post,
             save_gallery_settings,
             test_gallery_settings,
+            thumbnails::prepare_asset_thumbnails,
             sync_status,
             set_sync_editing,
             save_sync_config,

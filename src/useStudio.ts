@@ -276,6 +276,11 @@ export function useStudio() {
     if (!boot.dataDir) return '';
     return convertFileSrc(`${boot.dataDir.replace(/[\\/]$/, '')}/${(thumbnail || asset.mime === 'image/svg+xml') && asset.thumbnailPath ? asset.thumbnailPath : asset.path}`);
   }, [boot.dataDir]);
+  const prepareAssetThumbnails = useCallback(async (assetIds: string[]) => {
+    const document = await invoke<StudioDocument>('prepare_asset_thumbnails', { assetIds });
+    accept(document);
+    return document;
+  }, [accept]);
   const generationStartedAt = (job?: Job) => {
     if (!job) return undefined;
     const active = activeGenerations[job.sessionId];
@@ -317,6 +322,6 @@ export function useStudio() {
   const exportUsage = useCallback(async () => { requireDesktop(); const destination=await save({title:'导出用量记录',defaultPath:'image-studio-usage.jsonl',filters:[{name:'JSON Lines',extensions:['jsonl']}]});if(destination){await invoke('export_usage',{destination});notify('用量日志已导出');} },[requireDesktop,notify]);
   const chooseDataDirectory = useCallback(async () => { requireDesktop(); return open({directory:true,multiple:false,title:'选择空的数据目录'}); },[requireDesktop]);
   const relocateData = useCallback(async (destination:string) => { requireDesktop(); await settingsWrites.current!.idle(); await invoke('relocate_data',{destination});notify('正在迁移数据并重启应用…'); },[requireDesktop,notify]);
-  return { ...boot, accept, registerSketchEditor, flushSketchEditors, apiError, setApiError, galleryTasks, galleryDraft, setGalleryDraft, requestGalleryImport, enqueueGalleryImport, controlGalleryImport, openGalleryPost, ready, loadError, toasts, settingsSaving, settingsError, sync, syncBusy, syncNow, refreshSync, notify, report, refresh, mutate, saveSettings, importImages, importClipboardImages, nameSession, exportImage, generate, generationStartedAt, refine, imageUrl, listModels, usageRecords, networkSettings, testNetworkSettings, exportUsage, chooseDataDirectory, relocateData, moveSession, registerSessionEditor, previewDeleteSession, deleteSession, previewSessionRollback, rollbackSession, previewDeleteWorkspace, deleteWorkspace, previewDeleteSessions, deleteSessions, moveSessions };
+  return { ...boot, accept, registerSketchEditor, flushSketchEditors, apiError, setApiError, galleryTasks, galleryDraft, setGalleryDraft, requestGalleryImport, enqueueGalleryImport, controlGalleryImport, openGalleryPost, ready, loadError, toasts, settingsSaving, settingsError, sync, syncBusy, syncNow, refreshSync, notify, report, refresh, mutate, saveSettings, importImages, importClipboardImages, nameSession, exportImage, generate, generationStartedAt, refine, imageUrl, prepareAssetThumbnails, listModels, usageRecords, networkSettings, testNetworkSettings, exportUsage, chooseDataDirectory, relocateData, moveSession, registerSessionEditor, previewDeleteSession, deleteSession, previewSessionRollback, rollbackSession, previewDeleteWorkspace, deleteWorkspace, previewDeleteSessions, deleteSessions, moveSessions };
 }
 export type Studio = ReturnType<typeof useStudio>;

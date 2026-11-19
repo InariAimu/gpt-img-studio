@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { assetStackKey, stackAssets } from '../src/assetStacks.ts';
+import { assetStackKey, countAssetStacks, stackAssets } from '../src/assetStacks.ts';
 
 const sample = JSON.parse(readFileSync(new URL('../src/data/seed.json', import.meta.url), 'utf8')).assets[0];
 const image = (id, sessionId, day, extra = {}) => ({
@@ -20,7 +20,8 @@ test('legacy parent, derived, and nested derived sessions have independent stack
   const before = JSON.stringify(assets);
   const stacks = stackAssets(assets);
   assert.deepEqual(stacks.map(a => a.id), ['nested', 'derived-new', 'parent-new']);
-  assert.deepEqual(stacks.map(cover => assets.filter(a => assetStackKey(a) === assetStackKey(cover)).length), [1, 2, 2]);
+  const counts = countAssetStacks(assets);
+  assert.deepEqual(stacks.map(cover => counts.get(assetStackKey(cover))), [1, 2, 2]);
   assert.equal(JSON.stringify(assets), before);
 });
 
@@ -41,4 +42,5 @@ test('imports, reference copies, and images without sessions do not join a sessi
     image('same-file-other-session', 'other-session', 6),
   ];
   assert.equal(stackAssets(assets).length, assets.length);
+  assert.deepEqual([...countAssetStacks(assets).values()], [1, 1, 1, 1, 1, 1]);
 });

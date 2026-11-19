@@ -17,17 +17,15 @@ export function Modal({ title, children, onClose, className = '' }: { title: str
 export function Empty({ icon, title, description, children }: { icon?: ReactNode; title: string; description: string; children?: ReactNode }) {
   return <div className="empty"><div className="empty-icon">{icon || <ImageIcon />}</div><h3>{title}</h3><p>{description}</p>{children}</div>;
 }
-export function AssetCard({ asset, studio, title = asset.title, showSubtitle = true, active, selecting = false, wall = false, versions = 1, showFormatBadge = false, onSelect, onOpen }: { asset: Asset; studio: Studio; title?: string; showSubtitle?: boolean; active?: boolean; selecting?: boolean; wall?: boolean; versions?: number; showFormatBadge?: boolean; onSelect: () => void; onOpen?: () => void }) {
-  const workspace = studio.document.workspaces.find(w => w.id === asset.workspaceId);
-  const discarded=studio.document.sessions.some(session=>session.id===asset.sessionId&&session.discarded);
+export function AssetCard({ asset, studio, title = asset.title, workspaceName, discarded = studio.document.sessions.some(session => session.id === asset.sessionId && session.discarded), showSubtitle = true, active, selecting = false, wall = false, versions = 1, showFormatBadge = false, pendingThumbnailKey, onSelect, onOpen }: { asset: Asset; studio: Studio; title?: string; workspaceName?: string; discarded?: boolean; showSubtitle?: boolean; active?: boolean; selecting?: boolean; wall?: boolean; versions?: number; showFormatBadge?: boolean; pendingThumbnailKey?: string; onSelect: () => void; onOpen?: () => void }) {
   const format = showFormatBadge ? asset.mime === 'image/gif' ? 'GIF' : asset.mime === 'image/svg+xml' ? 'SVG' : '' : '';
-  return <article className={`asset-card ${active ? 'selected' : ''} ${asset.favorite?'has-favorite':''} ${discarded?'is-discarded':''}`}>
+  return <article className={`asset-card ${active ? 'selected' : ''} ${asset.favorite?'has-favorite':''} ${discarded?'is-discarded':''}`} data-thumbnail-id={pendingThumbnailKey ? asset.id : undefined} data-thumbnail-key={pendingThumbnailKey}>
     <button className="asset-main" onClick={onSelect} onDoubleClick={selecting?undefined:onOpen} aria-label={`${selecting?'选择会话':'查看'} ${title}${format ? ` · ${format}` : ''}${discarded?' · 已废弃':''}`} aria-pressed={active}>
-      <span className="asset-frame"><ImageSurface src={studio.imageUrl(asset, true)} alt={title} width={asset.width} height={asset.height} />
+      <span className="asset-frame">{pendingThumbnailKey ? <span className="image-surface" aria-hidden="true" /> : <ImageSurface src={studio.imageUrl(asset, true)} alt={title} width={asset.width} height={asset.height} />}
         {discarded&&<span className="discarded-overlay"><span className="discarded-badge"><Ban size={14}/>已废弃</span></span>}
         {format && <span className="format-badge" aria-hidden="true">{format}</span>}
         {selecting&&<span className={`asset-selection-check ${active?'checked':''}`} aria-hidden="true">{active&&<Check size={14}/>}</span>}{asset.demo && <span className="sample-badge">示例</span>}{versions > 1 && <span className="version-badge" title={`${versions} 个版本`}><Layers size={12} />{versions}{!wall&&' 个版本'}</span>}{wall&&selecting&&asset.favorite&&<span className="wall-favorite-marker" aria-label="已收藏"><Heart size={14} fill="currentColor"/></span>}
-      </span><span className="asset-title" title={title}>{title}</span>{showSubtitle&&<span className="asset-subtitle">{workspace?.name || '本地导入'}<span>·</span>{asset.width} × {asset.height}</span>}
+      </span><span className="asset-title" title={title}>{title}</span>{showSubtitle&&<span className="asset-subtitle">{(workspaceName ?? studio.document.workspaces.find(w => w.id === asset.workspaceId)?.name) || '本地导入'}<span>·</span>{asset.width} × {asset.height}</span>}
     </button>{!selecting&&<button className={`favorite-button ${asset.favorite ? 'is-favorite' : ''}`} aria-label={asset.favorite ? `取消收藏 ${title}` : `收藏 ${title}`} onClick={() => void studio.mutate({ type: 'favorite', id: asset.id }).catch(studio.report)}><Heart size={14} fill={asset.favorite ? 'currentColor' : 'none'} /></button>}
   </article>;
 }

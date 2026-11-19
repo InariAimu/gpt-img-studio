@@ -1,4 +1,6 @@
-use image::{GenericImageView, ImageFormat};
+use image::GenericImageView;
+#[cfg(test)]
+use image::ImageFormat;
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -40,6 +42,7 @@ pub fn find<'a>(doc: &'a Value, collection: &str, item_id: &str) -> Result<&'a V
 pub struct Store {
     pub root: PathBuf,
     pub(crate) connection: Mutex<Connection>,
+    pub(crate) thumbnail_worker: Mutex<()>,
     relocating: AtomicBool,
     operations: AtomicUsize,
 }
@@ -76,6 +79,7 @@ impl Store {
         let store = Self {
             root,
             connection: Mutex::new(connection),
+            thumbnail_worker: Mutex::new(()),
             relocating: AtomicBool::new(false),
             operations: AtomicUsize::new(0),
         };
@@ -161,13 +165,16 @@ impl Store {
         serde_json::from_str(&value).map_err(|e| format!("无法读取图库：{e}"))
     }
     pub fn change(&self, update: impl FnOnce(&mut Value) -> Result<()>) -> Result<Value> {
+        self.change_if(|doc| update(doc).map(|()| true)).map(|(doc, _)| doc)
+    }
+    pub(crate) fn change_if(&self, update: impl FnOnce(&mut Value) -> Result<bool>) -> Result<(Value, bool)> {
         self.ensure_writable()?;
         self.change_locked(update)
     }
     pub fn change_when_idle(&self, update: impl FnOnce(&mut Value) -> Result<()>) -> Result<Value> {
         self.reserve_relocation()?;
         let _guard = IdleWriteGuard(self);
-        self.change_locked(update)
+        self.change_locked(|doc| update(doc).map(|()| true)).map(|(doc, _)| doc)
     }
     pub fn delete_session(&self, session_id: &str, references: &[String], token: &str) -> Result<Value> {
         self.delete_session_recycling(session_id, references, token, crate::recycle::directory)
@@ -220,7 +227,7 @@ impl Store {
         }
         Ok(after)
     }
-    fn change_locked(&self, update: impl FnOnce(&mut Value) -> Result<()>) -> Result<Value> {
+    fn change_locked(&self, update: impl FnOnce(&mut Value) -> Result<bool>) -> Result<(Value, bool)> {
         let connection = self
             .connection
             .lock()
@@ -231,7 +238,9 @@ impl Store {
             })
             .map_err(|e| e.to_string())?;
         let mut doc: Value = serde_json::from_str(&value).map_err(|e| e.to_string())?;
-        update(&mut doc)?;
+        if !update(&mut doc)? {
+            return Ok((doc, false));
+        }
         doc["revision"] = json!(doc["revision"].as_u64().unwrap_or(0) + 1);
         connection
             .execute(
@@ -239,7 +248,7 @@ impl Store {
                 params![doc.to_string()],
             )
             .map_err(|e| format!("无法保存图库：{e}"))?;
-        Ok(doc)
+        Ok((doc, true))
     }
     pub fn record_usage(&self, event: &Value) -> Result<()> {
         let connection = self.connection.lock().map_err(|_| "无法写入用量记录")?;
@@ -373,27 +382,7 @@ impl Store {
         Ok(path)
     }
     pub fn save_image(&self, bytes: &[u8], name: &str) -> Result<Value> {
-        if bytes.len() > 128 * 1024 * 1024 {
-            return Err("单张图片不能超过 128 MB".into());
-        }
-        let format = image::guess_format(bytes)
-            .map_err(|_| "不支持的图片格式，请使用 PNG、JPEG、WebP 或 GIF")?;
-        let (extension, mime) = match format {
-            ImageFormat::Png => ("png", "image/png"),
-            ImageFormat::Jpeg => ("jpg", "image/jpeg"),
-            ImageFormat::WebP => ("webp", "image/webp"),
-            ImageFormat::Gif => ("gif", "image/gif"),
-            _ => return Err("不支持的图片格式，请使用 PNG、JPEG、WebP 或 GIF".into()),
-        };
-        let reader = image::ImageReader::with_format(std::io::Cursor::new(bytes), format);
-        let (w, h) = reader
-            .into_dimensions()
-            .map_err(|e| format!("无法读取图片尺寸：{e}"))?;
-        if u64::from(w) * u64::from(h) > 50_000_000 {
-            return Err("图片超过 5000 万像素，请先缩小图片".into());
-        }
-        let decoded = image::load_from_memory_with_format(bytes, format)
-            .map_err(|e| format!("无法解码图片：{e}"))?;
+        let (decoded, extension, mime) = crate::thumbnails::decode_raster(bytes)?;
         let hash = format!("{:x}", Sha256::digest(bytes));
         let relative = format!("assets/{hash}.{extension}");
         let path = self.root.join(&relative);
@@ -414,13 +403,10 @@ impl Store {
             }
             Err(e) => return Err(format!("无法保存原图：{e}")),
         }
-        let thumbnail = format!("thumbnails/{hash}.webp");
-        if !self.root.join(&thumbnail).exists() {
-            decoded
-                .thumbnail(960, 960)
-                .to_rgba8()
-                .save_with_format(self.root.join(&thumbnail), ImageFormat::WebP)
-                .map_err(|e| format!("无法生成预览图：{e}"))?;
+        let thumbnail = crate::thumbnails::relative_path(&hash);
+        let target = self.root.join(&thumbnail);
+        if !crate::thumbnails::is_cached(&target) {
+            crate::thumbnails::install(&target, &crate::thumbnails::encode(&decoded)?)?;
         }
         let (width, height) = decoded.dimensions();
         Ok(

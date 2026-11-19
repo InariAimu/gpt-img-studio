@@ -6,6 +6,15 @@ export function assetStackKey(asset: Asset): string {
     : `asset:${asset.id}`;
 }
 
+export function countAssetStacks(assets: readonly Asset[]) {
+  const counts = new Map<string, number>();
+  for (const asset of assets) {
+    const key = assetStackKey(asset);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return counts;
+}
+
 export function stackAssets(assets: readonly Asset[]): Asset[] {
   const seen = new Set<string>();
   return [...assets]
