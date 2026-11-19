@@ -98,24 +98,45 @@ impl Tracker {
             attention: Some(false),
         }
     }
+
+    #[cfg(any(target_os = "macos", test))]
+    fn dock_badge(&self) -> Option<String> {
+        let running = self
+            .jobs
+            .values()
+            .filter(|status| *status == "running")
+            .count();
+        let marker = if self.unseen_failure {
+            "!"
+        } else if self.attention {
+            "✓"
+        } else {
+            ""
+        };
+        if running > 0 {
+            Some(format!("{running}{marker}"))
+        } else {
+            (!marker.is_empty()).then(|| marker.to_owned())
+        }
+    }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod native {
     use super::*;
     use std::sync::Mutex;
+    #[cfg(windows)]
     use tauri::{
         window::{ProgressBarState, ProgressBarStatus},
-        AppHandle, Manager, UserAttentionType,
+        UserAttentionType,
     };
+    use tauri::{AppHandle, Manager, WebviewWindow};
 
     #[derive(Default)]
     pub struct Taskbar(Mutex<Tracker>);
 
-    fn apply(app: &AppHandle, effects: Effects) {
-        let Some(window) = app.get_webview_window("main") else {
-            return;
-        };
+    #[cfg(windows)]
+    fn apply(window: &WebviewWindow, effects: Effects) {
         if let Some(progress) = effects.progress {
             let _ = window.set_progress_bar(ProgressBarState {
                 status: Some(match progress {
@@ -131,70 +152,80 @@ mod native {
                 .request_user_attention(attention.then_some(UserAttentionType::Informational));
         }
     }
-    pub fn sync(app: &AppHandle, document: &Value) {
-        let snapshot = Snapshot::from_document(document);
+    fn update_on_main(
+        app: &AppHandle,
+        update: impl FnOnce(&WebviewWindow, &mut Tracker) -> Effects + Send + 'static,
+    ) {
         let handle = app.clone();
         // Serialize native effects on the UI thread. Never hold the tracker lock across window calls.
         let _ = app.run_on_main_thread(move || {
             let Some(window) = handle.get_webview_window("main") else {
                 return;
             };
-            let focused =
-                window.is_focused().unwrap_or(true) && !window.is_minimized().unwrap_or(false);
             let Some(state) = handle.try_state::<Taskbar>() else {
                 return;
             };
             let Ok(mut tracker) = state.0.lock() else {
                 return;
             };
-            let effects = tracker.update(snapshot, focused);
+            #[cfg(target_os = "macos")]
+            let previous = tracker.revision.map(|_| tracker.dock_badge());
+            let effects = update(&window, &mut tracker);
+            #[cfg(target_os = "macos")]
+            let badge = tracker.dock_badge();
             drop(tracker);
-            apply(&handle, effects);
+            #[cfg(windows)]
+            apply(&window, effects);
+            #[cfg(target_os = "macos")]
+            {
+                let _ = effects;
+                if previous.as_ref() != Some(&badge) {
+                    let _ = window.set_badge_label(badge);
+                }
+            }
         });
     }
+
+    pub fn sync(app: &AppHandle, document: &Value) {
+        let snapshot = Snapshot::from_document(document);
+        update_on_main(app, move |window, tracker| {
+            let focused =
+                window.is_focused().unwrap_or(true) && !window.is_minimized().unwrap_or(false);
+            tracker.update(snapshot, focused)
+        });
+    }
+
     pub fn focus(app: &AppHandle) {
-        let handle = app.clone();
-        let _ = app.run_on_main_thread(move || {
-            let Some(window) = handle.get_webview_window("main") else {
-                return;
-            };
+        update_on_main(app, |window, tracker| {
             // A queued focus event may be stale after a rapid switch to another app.
             if !window.is_focused().unwrap_or(false) || window.is_minimized().unwrap_or(false) {
-                return;
+                return Effects::default();
             }
-            let Some(state) = handle.try_state::<Taskbar>() else {
-                return;
-            };
-            let Ok(mut tracker) = state.0.lock() else {
-                return;
-            };
-            let effects = tracker.focused();
-            drop(tracker);
-            apply(&handle, effects);
+            tracker.focused()
         });
     }
 }
 
 pub fn initialize(app: &tauri::AppHandle, document: &Value) {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     {
         use tauri::Manager;
         app.manage(native::Taskbar::default());
         native::sync(app, document);
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _ = (app, document);
 }
 pub fn sync(app: &tauri::AppHandle, document: &Value) {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     native::sync(app, document);
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _ = (app, document);
 }
 pub fn focused(app: &tauri::AppHandle) {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     native::focus(app);
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _ = app;
 }
 
@@ -316,5 +347,47 @@ mod tests {
             tracker.update(snapshot(11, &[("new", "completed")]), false),
             Effects::default()
         );
+    }
+
+    #[test]
+    fn dock_badge_keeps_the_running_count_next_to_an_unread_result() {
+        let mut tracker = Tracker::default();
+        tracker.update(snapshot(0, &[]), false);
+        assert_eq!(tracker.dock_badge(), None);
+        tracker.update(snapshot(1, &[("a", "running"), ("b", "running")]), false);
+        assert_eq!(tracker.dock_badge().as_deref(), Some("2"));
+        tracker.update(snapshot(2, &[("a", "completed"), ("b", "running")]), false);
+        assert_eq!(tracker.dock_badge().as_deref(), Some("1✓"));
+        tracker.focused();
+        assert_eq!(tracker.dock_badge().as_deref(), Some("1"));
+        tracker.update(
+            snapshot(3, &[("a", "completed"), ("b", "completed")]),
+            false,
+        );
+        assert_eq!(tracker.dock_badge().as_deref(), Some("✓"));
+        tracker.focused();
+        assert_eq!(tracker.dock_badge(), None);
+    }
+
+    #[test]
+    fn dock_badge_prioritizes_failures_and_only_marks_background_results() {
+        let mut tracker = Tracker::default();
+        tracker.update(
+            snapshot(5, &[("old", "failed"), ("cancelled", "interrupted")]),
+            false,
+        );
+        assert_eq!(tracker.dock_badge(), None);
+        tracker.update(snapshot(6, &[("a", "running"), ("b", "running")]), true);
+        tracker.update(snapshot(7, &[("a", "failed"), ("b", "running")]), false);
+        assert_eq!(tracker.dock_badge().as_deref(), Some("1!"));
+        tracker.update(snapshot(8, &[("a", "failed"), ("b", "completed")]), false);
+        assert_eq!(tracker.dock_badge().as_deref(), Some("!"));
+        tracker.update(snapshot(7, &[("a", "running"), ("b", "running")]), true);
+        assert_eq!(tracker.dock_badge().as_deref(), Some("!"));
+        tracker.focused();
+        assert_eq!(tracker.dock_badge(), None);
+        tracker.update(snapshot(9, &[("c", "running")]), true);
+        tracker.update(snapshot(10, &[("c", "completed")]), true);
+        assert_eq!(tracker.dock_badge(), None);
     }
 }
