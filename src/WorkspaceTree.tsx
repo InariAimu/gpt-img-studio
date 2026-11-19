@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type PointerEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type PointerEvent } from 'react';
 import { Folder, FolderOpen, Pencil, Plus } from 'lucide-react';
 import type { Studio } from './useStudio';
 
@@ -13,7 +13,12 @@ export default function WorkspaceTree({ studio, currentId, onOpen, onRename, onC
   onRename: (id: string) => void;
   onCreate: (id: string) => void;
 }) {
-  const workspaces = studio.document.workspaces;
+  const { workspaces, sessions } = studio.document;
+  const sessionCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const { workspaceId } of sessions) counts.set(workspaceId, (counts.get(workspaceId) ?? 0) + 1);
+    return counts;
+  }, [sessions]);
   const tree = useRef<HTMLDivElement>(null);
   const drag = useRef<Drag | null>(null);
   const target = useRef<Drop | null>(null);
@@ -133,8 +138,9 @@ export default function WorkspaceTree({ studio, currentId, onOpen, onRename, onC
     }}>
     {workspaces.map((workspace, index) => {
       const current = workspace.id === currentId;
+      const sessionCount = sessionCounts.get(workspace.id) ?? 0;
       return <div key={workspace.id} data-workspace-id={workspace.id} className={`workspace-row ${current ? 'current' : ''} ${draggingId === workspace.id ? 'dragging' : ''} ${drop?.rowId === workspace.id ? `drop-${drop.edge}` : ''}`}>
-        <button className="workspace-link" title={workspace.name} aria-current={current ? 'page' : undefined} aria-description="按住并移动可排序，也可用 Alt 加上下方向键调整" onClick={() => onOpen(workspace.id)}
+        <button className="workspace-link" title={workspace.name} aria-current={current ? 'page' : undefined} aria-description={`${sessionCount} 个会话。按住并移动可排序，也可用 Alt 加上下方向键调整`} onClick={() => onOpen(workspace.id)}
           onPointerDown={event => {
             if (event.button !== 0 || !event.isPrimary || busy.current || drag.current || workspaces.length < 2) return;
             event.currentTarget.setPointerCapture(event.pointerId);
@@ -150,9 +156,10 @@ export default function WorkspaceTree({ studio, currentId, onOpen, onRename, onC
             const ids = workspaces.map(w => w.id);
             [ids[index], ids[destination]] = [ids[destination], ids[index]];
             void saveOrder(ids);
-          }}>{current ? <FolderOpen /> : <Folder />}<span>{workspace.name}</span></button>
+          }}>{current ? <FolderOpen /> : <Folder />}<span className="workspace-name">{workspace.name}</span></button>
         <button className="tree-rename icon-button" aria-label={`重命名工作区 ${workspace.name}`} title="重命名工作区" onClick={() => onRename(workspace.id)}><Pencil /></button>
         <button className="tree-add icon-button" aria-label={`在 ${workspace.name} 新建会话`} onClick={() => onCreate(workspace.id)}><Plus /></button>
+        <span className="workspace-session-count" aria-hidden="true">{sessionCount}</span>
       </div>;
     })}
   </div>;

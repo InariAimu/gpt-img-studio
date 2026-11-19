@@ -125,7 +125,10 @@ kbd {font:var(--font-size-min) 'Segoe UI',sans-serif;color:var(--text-3);border:
 .workspace-row.drop-after::after {bottom:-2px;}
 .workspace-link {display:flex;align-items:center;gap:6px;min-width:0;flex:1;text-align:left;font-size:var(--font-size-min);height:100%;user-select:none;touch-action:none;}
 .workspace-link svg {width:14px;height:14px;color:var(--text-2);flex-shrink:0;}
-.workspace-link span {overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.workspace-name {flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.workspace-session-count {position:absolute;inset-block:0;right:3px;display:grid;align-items:center;color:var(--text-3);font-size:var(--font-size-min);font-variant-numeric:tabular-nums;pointer-events:none;}
+.workspace-row:hover .workspace-session-count {visibility:hidden;}
+.workspace-row>button:focus-visible~.workspace-session-count {visibility:hidden;}
 .tree-add {width:20px;height:22px;margin-right:3px;opacity:0;}
 .workspace-row:hover .tree-add,.tree-add:focus-visible {opacity:1;}
 .tree-rename {width:20px;height:22px;opacity:0;flex-shrink:0;}
